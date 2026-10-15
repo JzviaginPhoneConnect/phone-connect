@@ -1,15 +1,23 @@
-# Builds PhoneConnect for Windows:
-#   dist/PhoneConnect-Setup.exe                       installer (Intel/AMD and ARM PCs)
-#   dist/PhoneConnect-Windows-x64-portable.zip        no-install version, Intel/AMD
-#   dist/PhoneConnect-Windows-arm64-portable.zip      no-install version, ARM (e.g. Parallels on Apple Silicon)
+# Builds PhoneConnect for Windows.
 #
-# Run on Windows:   powershell -ExecutionPolicy Bypass -File build\build-windows.ps1
-# Needs: Inno Setup 6 for the installer (https://jrsoftware.org/isdl.php, or
-#        `choco install innosetup`). Use -SkipInstaller to build only the zips.
-# The version stamped into the app comes from $env:APP_VERSION, e.g. 1.2.3
-# (the GitHub workflow sets it). Without it, a local build is "<VERSION file>-dev".
+#   build\build-windows.ps1              release files in dist\:
+#                                          PhoneConnect-Setup.exe (installer, Intel/AMD and ARM PCs)
+#                                          PhoneConnect-Windows-x64-portable.zip   (no install, Intel/AMD)
+#                                          PhoneConnect-Windows-arm64-portable.zip (no install, ARM, e.g.
+#                                                                                  Parallels on Apple Silicon)
+#   build\build-windows.ps1 -Dev         developer build for testing a change: only a ready-to-run
+#                                          folder dist\dev\PhoneConnect\ for this PC, no installer or zips
+#   build\build-windows.ps1 -Dev -Run    ...and start it right away
+#
+# Run it with:  powershell -ExecutionPolicy Bypass -File build\build-windows.ps1 [-Dev] [-Run]
+# The release build needs Inno Setup 6 for the installer (https://jrsoftware.org/isdl.php,
+# or `choco install innosetup`); -SkipInstaller builds only the zips. -Dev needs nothing extra.
+# The version stamped into the app comes from $env:APP_VERSION, e.g. 1.2.3 (the GitHub
+# workflow sets it). Without it, the build is marked as a developer build, e.g.
+# 1.0.4-dev+3f2a1b9 (the next version, then the commit it was built from).
 
-param([switch]$SkipInstaller)
+param([switch]$SkipInstaller, [switch]$Dev, [switch]$Run)
+if ($Run) { $Dev = $true }
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'   # makes downloads much faster in Windows PowerShell
@@ -17,8 +25,9 @@ $ProgressPreference = 'SilentlyContinue'   # makes downloads much faster in Wind
 $Root = Split-Path -Parent $PSScriptRoot
 $Dl   = Join-Path $Root 'downloads'
 $Dist = Join-Path $Root 'dist'
-$Work = Join-Path $Dist 'windows'
+$Work = if ($Dev) { Join-Path $Dist 'dev/work' } else { Join-Path $Dist 'windows' }
 $Stage = Join-Path $Work 'stage'
+$DevApp = Join-Path $Dist 'dev/PhoneConnect'
 
 # ---- versions ----
 $cfg = @{}
@@ -26,13 +35,37 @@ foreach ($line in Get-Content (Join-Path $Root 'build/versions.env')) {
   if ($line -match '^\s*([A-Z0-9_]+)=(.*)$') { $cfg[$Matches[1]] = $Matches[2].Trim() }
 }
 $ScrcpyVersion = $cfg['SCRCPY_VERSION']
+function Get-DevVersion {
+  # the next release's number (latest vX.Y.Z tag + 1 in the last place), then the commit
+  $next = (Get-Content (Join-Path $Root 'VERSION') -Raw).Trim()
+  $sha = 'local'; $changed = ''
+  if (Get-Command git -ErrorAction SilentlyContinue) {
+    $tags = @(git -C $Root tag --list 'v*' 2>$null | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' })
+    if ($tags.Count -gt 0) {
+      $latest = $tags | ForEach-Object { [version]($_.Substring(1)) } | Sort-Object | Select-Object -Last 1
+      $next = "{0}.{1}.{2}" -f $latest.Major, $latest.Minor, ($latest.Build + 1)
+    }
+    $h = git -C $Root rev-parse --short=7 HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $h) { $sha = $h.Trim() }
+    if (git -C $Root status --porcelain 2>$null) { $changed = '.changed' }
+  }
+  return "$next-dev+$sha$changed"
+}
 if ($env:APP_VERSION) { $Version = $env:APP_VERSION.Trim() }
-else { $Version = (Get-Content (Join-Path $Root 'VERSION') -Raw).Trim() + '-dev' }
+else { $Version = Get-DevVersion }
 # Windows file versions need four plain numbers: 1.2.3 -> 1.2.3.0
 $NumericVersion = ($Version -split '-')[0]
 if ($NumericVersion -notmatch '^\d+\.\d+\.\d+$') { throw "Version must look like 1.2.3 (got '$Version')" }
 $FileVersion = "$NumericVersion.0"
-Write-Host "Building PhoneConnect $Version for Windows (scrcpy $ScrcpyVersion)"
+$devNote = if ($Dev) { ' - developer build' } else { '' }
+Write-Host "Building PhoneConnect $Version for Windows (scrcpy $ScrcpyVersion)$devNote"
+
+# Which kind of PC this is (only matters for -Dev, which builds just for this PC)
+function Get-ThisArch {
+  try { if ((Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1).Architecture -eq 12) { return 'arm64' } } catch {}
+  if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { return 'arm64' }
+  return 'x64'
+}
 
 function Get-Verified([string]$name, [string]$sha) {
   New-Item -ItemType Directory -Force -Path $Dl | Out-Null
@@ -49,8 +82,10 @@ function Get-Verified([string]$name, [string]$sha) {
 
 if (Test-Path $Work) { Remove-Item -Recurse -Force $Work }
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
-foreach ($f in @('PhoneConnect-Setup.exe', 'PhoneConnect-Windows-x64-portable.zip', 'PhoneConnect-Windows-arm64-portable.zip')) {
-  $p = Join-Path $Dist $f; if (Test-Path $p) { Remove-Item -Force $p }
+if (-not $Dev) {
+  foreach ($f in @('PhoneConnect-Setup.exe', 'PhoneConnect-Windows-x64-portable.zip', 'PhoneConnect-Windows-arm64-portable.zip')) {
+    $p = Join-Path $Dist $f; if (Test-Path $p) { Remove-Item -Force $p }
+  }
 }
 
 # ---- bundled tools: scrcpy, adb and their DLLs, for Intel/AMD and ARM ----
@@ -58,6 +93,7 @@ $sets = @(
   @{ Arch = 'x64';   Zip = "scrcpy-win64-v$ScrcpyVersion.zip";    Sha = $cfg['SHA256_WIN64'] },
   @{ Arch = 'arm64'; Zip = "scrcpy-winarm64-v$ScrcpyVersion.zip"; Sha = $cfg['SHA256_WINARM64'] }
 )
+if ($Dev) { $thisArch = Get-ThisArch; $sets = @($sets | Where-Object { $_.Arch -eq $thisArch }) }
 foreach ($s in $sets) {
   $zip = Get-Verified $s.Zip $s.Sha
   $tmp = Join-Path $Work ("unzip-" + $s.Arch)
@@ -105,6 +141,25 @@ $versionCs = Join-Path $Work 'Version.cs'
   /reference:System.Windows.Forms.dll `
   (Join-Path $Root 'windows/Launcher.cs') $versionCs
 if ($LASTEXITCODE -ne 0) { throw "Compiling the launcher failed" }
+
+# ---- developer build: a ready-to-run folder for this PC, then stop ----
+if ($Dev) {
+  # close a running copy first, so its files can be replaced
+  Get-Process scrcpy, adb -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith($DevApp, [StringComparison]::OrdinalIgnoreCase) } |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+  if (Test-Path $DevApp) { Remove-Item -Recurse -Force $DevApp }
+  New-Item -ItemType Directory -Force -Path $DevApp | Out-Null
+  foreach ($f in @('PhoneConnect.exe', 'PhoneConnect.ps1', 'PhoneConnect.ico', 'README.txt', 'THIRD_PARTY_NOTICES.md')) {
+    Copy-Item (Join-Path $Stage $f) $DevApp
+  }
+  Copy-Item (Join-Path $Stage "tools-$thisArch") (Join-Path $DevApp 'tools') -Recurse
+  Remove-Item -Recurse -Force $Work
+  Write-Host "Built: $DevApp (version $Version, $thisArch)"
+  Write-Host "Start it with $(Join-Path $DevApp 'PhoneConnect.exe'). Log: $env:TEMP\PhoneConnect.log"
+  if ($Run) { Start-Process (Join-Path $DevApp 'PhoneConnect.exe') }
+  exit 0
+}
 
 # ---- portable zips ----
 foreach ($arch in @('x64', 'arm64')) {

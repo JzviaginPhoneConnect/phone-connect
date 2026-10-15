@@ -1,20 +1,51 @@
 #!/usr/bin/env bash
-# Builds dist/PhoneConnect-macOS.zip: a self-contained PhoneConnect.app with
-# scrcpy and adb for both Apple Silicon and Intel Macs.
-# Runs on macOS or Linux. Usage:  ./build/build-macos.sh
-# The version stamped into the app comes from APP_VERSION, e.g.
-#   APP_VERSION=1.2.3 ./build/build-macos.sh
-# (the GitHub workflow sets it). Without it, a local build is "<next version>-dev".
+# Builds PhoneConnect for macOS: a self-contained PhoneConnect.app with scrcpy
+# and adb for both Apple Silicon and Intel Macs.
+#
+#   ./build/build-macos.sh          release files: dist/PhoneConnect.dmg (on a Mac)
+#                                   and dist/PhoneConnect-macOS.zip
+#   ./build/build-macos.sh --dev    developer build for testing a change: only
+#                                   dist/dev/PhoneConnect.app, no dmg or zip
+#   ./build/build-macos.sh --dev --run   ...and start it right away
+#
+# Runs on macOS (or Linux, without the .dmg). The version stamped into the app
+# comes from APP_VERSION, e.g. APP_VERSION=1.2.3 (the GitHub workflow sets it).
+# Without it, the build is marked as a developer build, e.g. 1.0.4-dev+3f2a1b9
+# (the next version, then the commit it was built from).
 set -euo pipefail
 
+DEV=false
+RUN=false
+for arg in "$@"; do
+  case "$arg" in
+    --dev) DEV=true ;;
+    --run) RUN=true; DEV=true ;;
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
+    *) echo "Unknown option $arg (use --dev, --run)" >&2; exit 1 ;;
+  esac
+done
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=build/versions.env
 source "$ROOT/build/versions.env"
-VERSION="${APP_VERSION:-$("$ROOT/build/next-version.sh" 2>/dev/null || cat "$ROOT/VERSION")-dev}"
+
+dev_version() {
+  local next sha dirty=""
+  next="$("$ROOT/build/next-version.sh" 2>/dev/null || tr -d '[:space:]' < "$ROOT/VERSION")"
+  sha="$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo local)"
+  if [[ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]]; then dirty=".changed"; fi
+  echo "$next-dev+$sha$dirty"
+}
+VERSION="${APP_VERSION:-$(dev_version)}"
 VERSION="$(printf '%s' "$VERSION" | tr -d '[:space:]')"
 NUMERIC_VERSION="${VERSION%%-*}"   # macOS wants plain numbers in the app's version fields
 DL="$ROOT/downloads"
 DIST="$ROOT/dist"
-APP="$DIST/macos/PhoneConnect.app"
+if $DEV; then
+  APP="$DIST/dev/PhoneConnect.app"
+else
+  APP="$DIST/macos/PhoneConnect.app"
+fi
 
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 
@@ -34,8 +65,12 @@ download() {
   echo "$file"
 }
 
-echo "Building PhoneConnect $VERSION for macOS (scrcpy $SCRCPY_VERSION)"
-rm -rf "$DIST/macos" "$DIST/PhoneConnect-macOS.zip"
+echo "Building PhoneConnect $VERSION for macOS (scrcpy $SCRCPY_VERSION)$($DEV && echo ' - developer build')"
+if $DEV; then
+  rm -rf "$APP"
+else
+  rm -rf "$DIST/macos" "$DIST/PhoneConnect-macOS.zip"
+fi
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/tools"
 
 # ---- bundled tools, one set per Mac type ----
@@ -78,6 +113,23 @@ cat > "$APP/Contents/Info.plist" <<EOF
 </dict>
 </plist>
 EOF
+
+# ---- developer build: stop here (and optionally start it) ----
+if $DEV; then
+  echo "Built: $APP (version $VERSION)"
+  if $RUN; then
+    if command -v open >/dev/null; then
+      # quit a running copy first, so the new build is the one that starts
+      pkill -f "PhoneConnect.app/Contents/MacOS/PhoneConnect" 2>/dev/null || true
+      pkill -x scrcpy 2>/dev/null || true
+      open "$APP"
+      echo "Started. Log: /tmp/PhoneConnect.log"
+    else
+      echo "Can't start it here (--run needs macOS)"
+    fi
+  fi
+  exit 0
+fi
 
 # ---- zip it (keeping the executables executable) ----
 cd "$DIST/macos"
