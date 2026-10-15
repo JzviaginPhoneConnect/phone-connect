@@ -5,6 +5,10 @@
 # * On every push to main (e.g. a merged pull request): works out the next
 #   version, builds it, then tags the commit vX.Y.Z and publishes a release.
 #   Every release is kept, so the Releases page is the version history.
+#   To land a change on main WITHOUT releasing it, tick "Don't release" in the
+#   pull request form, add the label no-release, or put [no release] in the
+#   commit message. It's still built (the files are kept on the workflow run)
+#   and becomes part of the next release (see build/release-wanted.sh).
 # * "Run workflow" on the Actions tab makes a release by hand, with a choice of
 #   which number to bump.
 #
@@ -61,9 +65,12 @@ jobs:
         run: |
           set -euo pipefail
           release=false
+          skipped=false
           case "$EVENT" in
             pull_request)
               version="$(PR_BODY="$PR_BODY_EVENT" PR_LABELS="$PR_LABELS_EVENT" ./build/next-version.sh --explain)"
+              wanted="$(PR_BODY="$PR_BODY_EVENT" PR_LABELS="$PR_LABELS_EVENT" ./build/release-wanted.sh --explain)"
+              [[ "$wanted" == yes ]] || skipped=true
               build_version="$version-pr$PR_NUMBER"
               ;;
             push)
@@ -78,12 +85,21 @@ jobs:
                 if [[ -n "$pr" ]]; then
                   body="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '.body // ""')"
                   labels="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '[.labels[].name] | join(",")')"
-                  echo "Released from pull request #$pr"
+                  echo "Came from pull request #$pr"
                 fi
                 version="$(PR_BODY="$body" PR_LABELS="$labels" COMMIT_MSG="$COMMIT_MSG_EVENT" ./build/next-version.sh --explain)"
-                release=true
+                wanted="$(PR_BODY="$body" PR_LABELS="$labels" COMMIT_MSG="$COMMIT_MSG_EVENT" ./build/release-wanted.sh --explain)"
+                if [[ "$wanted" == yes ]]; then
+                  release=true
+                else
+                  skipped=true
+                fi
               fi
               build_version="$version"
+              if [[ "$skipped" == true ]]; then
+                # not a release: mark the build so it can't be mistaken for one
+                build_version="$version-dev+${GITHUB_SHA::7}"
+              fi
               ;;
             workflow_dispatch)
               version="$(BUMP="$BUMP_INPUT" ./build/next-version.sh --explain)"
@@ -96,10 +112,14 @@ jobs:
             echo "build_version=$build_version"
             echo "release=$release"
           } >> "$GITHUB_OUTPUT"
-          if [[ "$EVENT" == pull_request ]]; then
+          if [[ "$EVENT" == pull_request && "$skipped" == true ]]; then
+            echo "### Merging this pull request won't release a new version" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$EVENT" == pull_request ]]; then
             echo "### Merging this pull request will release **v$version**" >> "$GITHUB_STEP_SUMMARY"
           elif [[ "$release" == true ]]; then
             echo "### Releasing **v$version**" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$skipped" == true ]]; then
+            echo "### Not released (as asked). Built as **$build_version**; the files are attached to this run." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### v$version is already released; building it again without a new release" >> "$GITHUB_STEP_SUMMARY"
           fi

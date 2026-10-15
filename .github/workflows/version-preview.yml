@@ -1,7 +1,7 @@
 # Keeps a comment on each pull request saying which version merging it will
-# release, and updates it when you tick or untick the version boxes in the
-# pull request form or change its labels. (It doesn't build anything; the
-# Build workflow does that.)
+# release (or that it won't release one), and updates it when you tick or
+# untick the boxes in the pull request form or change its labels.
+# (It doesn't build anything; the Build workflow does that.)
 name: Version preview
 
 on:
@@ -35,11 +35,20 @@ jobs:
           set -euo pipefail
           next="$(./build/next-version.sh --explain 2> why.txt)"
           why="$(cat why.txt)"
-          body="<!-- phoneconnect-version-preview -->
+          wanted="$(./build/release-wanted.sh --explain 2> skip.txt)"
+          if [[ "$wanted" == yes ]]; then
+            body="<!-- phoneconnect-version-preview -->
           **Merging this will release PhoneConnect v$next**
           ($why)
 
-          To change it, tick a box under *Version* in the description above, or add the label \`release:minor\` / \`release:major\`."
+          To change it, tick a box under *Version* in the description above, or add the label \`release:minor\` / \`release:major\`. To merge without releasing, tick *Don't release this change* or add the label \`no-release\`."
+          else
+            body="<!-- phoneconnect-version-preview -->
+          **Merging this won't release a new version**
+          ($(cat skip.txt)). The change will be part of the next release.
+
+          To release it after all, untick *Don't release this change* (or remove the \`no-release\` label)."
+          fi
           body="$(printf '%s\n' "$body" | sed 's/^          //')"
           echo "$body" >> "$GITHUB_STEP_SUMMARY"
           # update our earlier comment if there is one, otherwise add one
