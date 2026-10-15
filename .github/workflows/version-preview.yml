@@ -1,0 +1,52 @@
+# Keeps a comment on each pull request saying which version merging it will
+# release, and updates it when you tick or untick the version boxes in the
+# pull request form or change its labels. (It doesn't build anything; the
+# Build workflow does that.)
+name: Version preview
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write     # to write the comment
+
+concurrency:
+  group: version-preview-${{ github.event.number }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Version preview
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Comment the version this pull request will release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          next="$(./build/next-version.sh --explain 2> why.txt)"
+          why="$(cat why.txt)"
+          body="<!-- phoneconnect-version-preview -->
+          **Merging this will release PhoneConnect v$next**
+          ($why)
+
+          To change it, tick a box under *Version* in the description above, or add the label \`release:minor\` / \`release:major\`."
+          body="$(printf '%s\n' "$body" | sed 's/^          //')"
+          echo "$body" >> "$GITHUB_STEP_SUMMARY"
+          # update our earlier comment if there is one, otherwise add one
+          id="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
+                 --jq '.[] | select(.body | contains("phoneconnect-version-preview")) | .id' | head -1)"
+          if [[ -n "$id" ]]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" > /dev/null
+          else
+            gh pr comment "$PR_NUMBER" --body "$body"
+          fi

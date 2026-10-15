@@ -1,0 +1,184 @@
+# Builds PhoneConnect for macOS and Windows.
+#
+# * On every pull request into main: builds both, so GitHub can block the merge
+#   if a build fails (turn that on with .github/rulesets/main.json, see README).
+# * On every push to main (e.g. a merged pull request): works out the next
+#   version, builds it, then tags the commit vX.Y.Z and publishes a release.
+#   Every release is kept, so the Releases page is the version history.
+# * "Run workflow" on the Actions tab makes a release by hand, with a choice of
+#   which number to bump.
+#
+# Versions are x.y.z. By default z goes up. To bump x or y instead, tick the box
+# in the pull request form, add a label release:major / release:minor, or put
+# [major] / [minor] in the commit message (see build/next-version.sh).
+name: Build
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Which number to bump (x.y.z)"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: write          # to create the tag and the release
+  pull-requests: read      # to read the merged pull request's form and labels
+
+concurrency:
+  # pull requests: a newer push cancels the old build
+  # main: releases run one after another, never cancelled half-way
+  group: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'release-main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      build_version: ${{ steps.v.outputs.build_version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # the tags are needed to find the latest version
+      - id: v
+        name: Work out the version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.number }}
+          PR_BODY_EVENT: ${{ github.event.pull_request.body }}
+          PR_LABELS_EVENT: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          COMMIT_MSG_EVENT: ${{ github.event.head_commit.message }}
+          BUMP_INPUT: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          release=false
+          case "$EVENT" in
+            pull_request)
+              version="$(PR_BODY="$PR_BODY_EVENT" PR_LABELS="$PR_LABELS_EVENT" ./build/next-version.sh --explain)"
+              build_version="$version-pr$PR_NUMBER"
+              ;;
+            push)
+              existing="$(git tag --points-at HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' | head -1)"
+              if [[ -n "$existing" ]]; then
+                # this commit is already released (e.g. the run was restarted)
+                version="${existing#v}"
+              else
+                # read the form and labels of the pull request this commit came from, if any
+                pr="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].number // empty' || true)"
+                body=""; labels=""
+                if [[ -n "$pr" ]]; then
+                  body="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '.body // ""')"
+                  labels="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '[.labels[].name] | join(",")')"
+                  echo "Released from pull request #$pr"
+                fi
+                version="$(PR_BODY="$body" PR_LABELS="$labels" COMMIT_MSG="$COMMIT_MSG_EVENT" ./build/next-version.sh --explain)"
+                release=true
+              fi
+              build_version="$version"
+              ;;
+            workflow_dispatch)
+              version="$(BUMP="$BUMP_INPUT" ./build/next-version.sh --explain)"
+              build_version="$version"
+              release=true
+              ;;
+          esac
+          {
+            echo "version=$version"
+            echo "build_version=$build_version"
+            echo "release=$release"
+          } >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT" == pull_request ]]; then
+            echo "### Merging this pull request will release **v$version**" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$release" == true ]]; then
+            echo "### Releasing **v$version**" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### v$version is already released; building it again without a new release" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  macos:
+    name: Build macOS
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build PhoneConnect.app and PhoneConnect.dmg
+        run: ./build/build-macos.sh
+        env:
+          APP_VERSION: ${{ needs.version.outputs.build_version }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            dist/PhoneConnect.dmg
+            dist/PhoneConnect-macOS.zip
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Inno Setup
+        run: choco upgrade innosetup -y --no-progress
+      - name: Build installer and portable versions
+        shell: powershell
+        run: .\build\build-windows.ps1
+        env:
+          APP_VERSION: ${{ needs.version.outputs.build_version }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/PhoneConnect-Setup.exe
+            dist/PhoneConnect-Windows-x64-portable.zip
+            dist/PhoneConnect-Windows-arm64-portable.zip
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: [version, macos, windows]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Tag v${{ needs.version.outputs.version }} and publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          source build/versions.env
+          cat > notes.md <<EOF
+          | Download | For |
+          |---|---|
+          | **PhoneConnect.dmg** | Mac installer (Apple Silicon and Intel) |
+          | PhoneConnect-macOS.zip | Mac, the same app as a plain zip |
+          | **PhoneConnect-Setup.exe** | Windows installer (Intel/AMD and ARM) |
+          | PhoneConnect-Windows-x64-portable.zip | Windows, no install, Intel/AMD |
+          | PhoneConnect-Windows-arm64-portable.zip | Windows, no install, ARM (e.g. Parallels on Apple Silicon) |
+
+          Bundles scrcpy $SCRCPY_VERSION. Setup instructions are in the README.
+
+          EOF
+          # creates the tag vX.Y.Z on this commit; the list of changes since
+          # the previous release is added automatically after our notes
+          gh release create "v$VERSION" out/* \
+            --target "$GITHUB_SHA" \
+            --title "PhoneConnect $VERSION" \
+            --notes-file notes.md \
+            --generate-notes \
+            --latest
