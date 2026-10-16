@@ -48,16 +48,20 @@ exec 3> >(stamp cmd)
 
 # logged <command...>: run it and pass its output on, writing the command, its
 # exit code and its output to the log. LOGGED_LABEL= names the command in the log.
+# It runs no helper programs of its own (starting a program is slow on Windows):
+# the temp file name, removing it and the "  | " prefixes are all done by zsh.
+zmodload zsh/system              # $sysparams[pid]: this (sub)shell's own process id
+zmodload -F zsh/files b:zf_rm    # zf_rm: rm built into zsh
 logged() {
-  local out err rc errf
-  errf=$(mktemp "$TMPDIR/PhoneConnect.XXXXXX")
+  local out err rc errf="$TMPDIR/PhoneConnect.${sysparams[pid]}.$RANDOM.err"
+  local -a lines
   out=$("$@" 2>"$errf"); rc=$?
-  err=$(<"$errf"); rm -f "$errf"
+  err=$(<"$errf"); zf_rm -f "$errf"
   out=${out//$'\r'/} err=${err//$'\r'/}   # Windows programs end lines with CR LF
   {
     print -r -- "\$ ${LOGGED_LABEL:-$*}  -> exit $rc"
-    [[ -n "$out" ]] && print -r -- "$out" | sed 's/^/  | /'
-    [[ -n "$err" ]] && print -r -- "$err" | sed 's/^/  ! /'
+    if [[ -n "$out" ]]; then lines=("${(@f)out}"); print -rl -- "${lines[@]/#/  | }"; fi
+    if [[ -n "$err" ]]; then lines=("${(@f)err}"); print -rl -- "${lines[@]/#/  ! }"; fi
   } >&3
   [[ -n "$out" ]] && print -r -- "$out"
   [[ -n "$err" ]] && print -r -- "$err" >&2
