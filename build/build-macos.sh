@@ -80,10 +80,36 @@ for arch in aarch64 x86_64; do
   tmp="$(mktemp -d)"
   tar -xzf "$tgz" -C "$tmp"
   src="$tmp/scrcpy-macos-$arch-v$SCRCPY_VERSION"
-  mkdir -p "$APP/Contents/Resources/tools/$dest"
-  cp "$src/scrcpy" "$src/adb" "$src/scrcpy-server" "$APP/Contents/Resources/tools/$dest/"
-  cp "$src/LICENSE" "$APP/Contents/Resources/tools/$dest/scrcpy-LICENSE.txt"
-  chmod 755 "$APP/Contents/Resources/tools/$dest/scrcpy" "$APP/Contents/Resources/tools/$dest/adb"
+  tools="$APP/Contents/Resources/tools/$dest"
+  mkdir -p "$tools"
+  cp "$src/adb" "$src/scrcpy-server" "$tools/"
+  cp "$src/LICENSE" "$tools/scrcpy-LICENSE.txt"
+  # scrcpy goes in a small app bundle of its own, so its window shows up in the
+  # Dock as PhoneConnect with the app's icon (a bare program gets the "exec" icon)
+  mirror="$tools/PhoneConnect Mirror.app/Contents"
+  mkdir -p "$mirror/MacOS" "$mirror/Resources"
+  cp "$src/scrcpy" "$mirror/MacOS/scrcpy"
+  cp "$ROOT/assets/PhoneConnect.png" "$mirror/MacOS/scrcpy.png"   # window icon; scrcpy looks next to itself
+  cp "$ROOT/assets/PhoneConnect.icns" "$mirror/Resources/PhoneConnect.icns"
+  cat > "$mirror/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>PhoneConnect</string>
+  <key>CFBundleDisplayName</key><string>PhoneConnect</string>
+  <key>CFBundleIdentifier</key><string>io.github.phoneconnect.mirror</string>
+  <key>CFBundleExecutable</key><string>scrcpy</string>
+  <key>CFBundleIconFile</key><string>PhoneConnect</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>$NUMERIC_VERSION</string>
+  <key>CFBundleVersion</key><string>$NUMERIC_VERSION</string>
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+EOF
+  chmod 755 "$mirror/MacOS/scrcpy" "$tools/adb"
   rm -rf "$tmp"
 done
 
