@@ -589,8 +589,10 @@ if ($script:ChosenId -and $usbOf.ContainsKey($script:ChosenId)) {
   if (-not $script:Serial) {
     $name = Get-SavedName $script:ChosenId
     if (-not $name) { $name = 'the phone' }
-    Show-Error "can't reach $name" ("Couldn't reach $name. Plug it in with a USB cable once (needed after every phone restart) " +
-      "so PhoneConnect can turn on network mode. Make sure USB debugging is on and you tapped Allow on the phone.")
+    Show-Error "couldn't connect" ("Couldn't connect to $name.`n`n" +
+      "- Connect the phone to this computer with a USB cable, or`n" +
+      "- make sure the phone is on the same network (Wi-Fi or dock Ethernet) as this computer.`n`n" +
+      "After the phone restarts, the cable is needed once.")
     exit 1
   }
 

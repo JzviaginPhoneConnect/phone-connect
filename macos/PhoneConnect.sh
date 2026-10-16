@@ -83,6 +83,17 @@ notify() {
   osascript -e "display notification \"$2\" with title \"$1\"" 2>/dev/null
 }
 
+# alert "Title" "Message": a warning the user has to click away (passed as
+# arguments, so quotes in phone names can't break the AppleScript)
+alert() {
+  osascript - "$APP_VERSION" "$1" "$2" >/dev/null 2>&1 <<'EOF'
+on run argv
+  activate
+  display alert ("PhoneConnect " & item 1 of argv & ": " & item 2 of argv) message (item 3 of argv) as warning buttons {"OK"} default button "OK"
+end run
+EOF
+}
+
 # ask "Question" "Button A" "Button B" -> prints the chosen button (empty on Cancel)
 # (`activate` brings the dialog to the front, the app itself has no window)
 ask() {
@@ -481,8 +492,13 @@ else
 
   if [[ -z "$SERIAL" ]]; then
     name=$(phone_saved_name "$CHOSEN_ID"); name=${name:-the phone}
-    echo "Couldn't reach $name. Plug in the cable once (after each phone restart) to turn on network mode." >&2
-    notify "PhoneConnect: can't reach $name" "Plug in the cable once to turn on network mode"
+    echo "Couldn't connect to $name: every connection attempt failed." >&2
+    alert "couldn't connect" "Couldn't connect to $name.
+
+• Connect the phone to this Mac with a USB cable, or
+• make sure the phone is on the same network (Wi-Fi or dock Ethernet) as this Mac.
+
+After the phone restarts, the cable is needed once."
     exit 1
   fi
 
