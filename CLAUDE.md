@@ -49,18 +49,38 @@ end user installs nothing and never opens a terminal.
 
 ## Behaviour (and why) — keep these unless the user asks otherwise
 
+Several phones are remembered, in XML: `~/.phoneconnect_phones.xml` on Mac (read with
+the system's `xmllint`), `%APPDATA%\PhoneConnect\phones.xml` on Windows.
+`<phone id name eth wifi>`, most recently used first.
+- A phone is identified by `ro.serialno` (fallbacks `ro.boot.serialno`, `android_id`),
+  not the model — two phones can be the same model. `adb get-serialno` is no good: over
+  the network it returns `ip:5555`. Name = `device_name` setting, else the model.
+- A known phone with a new IP is updated, never added again. An IP saved for one phone
+  is removed from every other phone.
+- More than one phone saved → a chooser each run: every saved phone once (a phone on USB
+  is saved first, so it's in the list once, marked USB, and is the default; otherwise
+  the most recently used). If the chosen phone is on USB, USB is used.
+- After every network connect the phone's id is checked. If another phone answers at
+  that IP, the IP is moved to that phone (added if new), taken off the chosen one, the
+  connection is dropped and the next IP tried.
+- First run after upgrading: the old single-phone file (`~/.phoneconnect_ips`,
+  `ips.txt`) is migrated — old IPs are probed to find the phone; an IP nobody answers at
+  goes to the phone found at the other one (or the single USB phone), else to a
+  placeholder with an empty id that gets its real id on its first connection.
+- The Windows script must stay ASCII-only (PowerShell 5.1 reads BOM-less files as ANSI).
+
 Connection, in order of preference: **USB → Ethernet → Wi-Fi**.
-- While on USB: read the phone's `eth0` and `wlan0` IPs, save both
-  (`~/.phoneconnect_ips` on Mac, `%APPDATA%\PhoneConnect\ips.txt` on Windows), and turn
-  on network mode (`adb tcpip 5555`) **only if** `service.adb.tcp.port` isn't already
-  5555 — switching restarts adbd and drops USB for a moment.
+- While on USB (every phone plugged in): read the phone's `eth0` and `wlan0` IPs, save
+  both, and turn on network mode (`adb tcpip 5555`) **only if** `service.adb.tcp.port`
+  isn't already 5555 — switching restarts adbd and drops USB for a moment. Use
+  `adb -s <serial>`, never `-d` (it fails with two phones plugged in).
 - Network mode is lost when the phone **restarts**; then one USB plug-in is needed.
 - The Ethernet IP only exists while docked (no USB then), so it's **learned over
   Wi-Fi**: when connected over Wi-Fi and `eth0` has an IP, save it and switch to it.
 - Before `adb connect`, probe the port (`nc -z -G 2` on Mac, TcpClient on Windows) —
   `adb connect` to an unreachable IP can hang for over a minute.
 - Disconnect stale `offline` network entries first; they cause "Server connection failed".
-- Fallback: an mDNS Wireless-debugging device (`_adb-tls-connect._tcp`).
+- Fallback: an mDNS Wireless-debugging device (`_adb-tls-connect._tcp`) whose id matches.
 
 scrcpy options in use: `-K` (UHID keyboard: real-keyboard mode so the phone's own
 layouts work, which non-English languages need; the language switch is the phone's

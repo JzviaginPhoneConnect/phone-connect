@@ -1,8 +1,9 @@
 # PhoneConnect (Windows) — mirror and control an Android phone with scrcpy.
 # Same behaviour as the macOS version:
+#   * remembers several phones; asks which one to use when more than one is known
 #   * asks whether to mirror DeX (if a DeX display exists) and whether to forward audio
 #   * connects over USB, Ethernet (dock) or Wi-Fi, in that order of preference
-#   * remembers the phone's Ethernet and Wi-Fi IPs, so the cable is only needed
+#   * remembers each phone's Ethernet and Wi-Fi IPs, so the cable is only needed
 #     once after each phone restart
 #   * restarts scrcpy if no picture arrives within 15 seconds
 # Normally started by PhoneConnect.exe (no console window). Any extra arguments
@@ -25,7 +26,8 @@ $env:ADB  = $Adb                                       # the adb scrcpy should u
 $env:SCRCPY_SERVER_PATH = Join-Path $Tools 'scrcpy-server'  # the part that runs on the phone
 
 $DataDir  = Join-Path $env:APPDATA 'PhoneConnect'
-$IpsFile  = Join-Path $DataDir 'ips.txt'               # lines: "eth <ip>" and "wifi <ip>"
+$PhonesFile = Join-Path $DataDir 'phones.xml'          # the saved phones (see "Saved phones")
+$OldIpsFile = Join-Path $DataDir 'ips.txt'             # older versions: lines "eth <ip>" and "wifi <ip>"
 $LogFile  = Join-Path $env:TEMP 'PhoneConnect.log'
 $Port     = 5555
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
@@ -103,6 +105,74 @@ function Ask([string]$text, [string]$button1, [string]$button2) {
   return $answer
 }
 
+# A list to pick from. Returns the chosen item, or '' for Cancel / closing the window.
+function Choose([string]$text, [string[]]$items, [string]$default) {
+  $form = New-Object System.Windows.Forms.Form
+  $form.Text = "PhoneConnect $AppVersion"
+  $form.FormBorderStyle = 'FixedDialog'
+  $form.StartPosition = 'CenterScreen'
+  $form.MaximizeBox = $false
+  $form.MinimizeBox = $false
+  $form.TopMost = $true
+  $form.AutoSize = $true
+  $form.AutoSizeMode = 'GrowAndShrink'
+  $form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+  if ($AppIcon) { $form.Icon = $AppIcon }
+
+  $outer = New-Object System.Windows.Forms.FlowLayoutPanel
+  $outer.FlowDirection = 'TopDown'
+  $outer.AutoSize = $true
+  $outer.AutoSizeMode = 'GrowAndShrink'
+  $outer.Padding = New-Object System.Windows.Forms.Padding(16)
+
+  $label = New-Object System.Windows.Forms.Label
+  $label.Text = $text
+  $label.AutoSize = $true
+  $label.MaximumSize = New-Object System.Drawing.Size(400, 0)
+  $label.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
+  $outer.Controls.Add($label)
+
+  $list = New-Object System.Windows.Forms.ListBox
+  $list.Name = 'list'
+  $list.Width = 400
+  $list.Font = $form.Font
+  $list.IntegralHeight = $true
+  $list.Items.AddRange([object[]]$items)
+  $list.Height = [Math]::Min($items.Count, 10) * $list.ItemHeight + 6
+  $list.SelectedItem = $default
+  if ($list.SelectedIndex -lt 0) { $list.SelectedIndex = 0 }
+  $list.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 16)
+  $list.Add_DoubleClick({ $f = $this.FindForm(); $f.Tag = [string]$this.SelectedItem; $f.Close() })
+  $outer.Controls.Add($list)
+
+  $buttons = New-Object System.Windows.Forms.FlowLayoutPanel
+  $buttons.FlowDirection = 'LeftToRight'
+  $buttons.AutoSize = $true
+  $buttons.AutoSizeMode = 'GrowAndShrink'
+  $buttons.Anchor = 'Right'
+  foreach ($caption in @('Cancel', 'Connect')) {
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text = $caption
+    $b.AutoSize = $true
+    $b.MinimumSize = New-Object System.Drawing.Size(100, 32)
+    if ($caption -eq 'Connect') {
+      $b.Add_Click({ $f = $this.FindForm(); $f.Tag = [string]$f.Controls.Find('list', $true)[0].SelectedItem; $f.Close() })
+      $form.AcceptButton = $b
+    } else {
+      $b.Add_Click({ $f = $this.FindForm(); $f.Tag = ''; $f.Close() })
+      $form.CancelButton = $b
+    }
+    $buttons.Controls.Add($b)
+  }
+  $outer.Controls.Add($buttons)
+  $form.Controls.Add($outer)
+  $form.Add_Shown({ $this.Activate() })
+  [void]$form.ShowDialog()
+  $answer = [string]$form.Tag
+  $form.Dispose()
+  return $answer
+}
+
 # Windows quotes command-line arguments by hand; this follows the usual rules.
 function Quote-Arg([string]$a) {
   if ($a -eq '') { return '""' }
@@ -111,9 +181,9 @@ function Quote-Arg([string]$a) {
   return '"' + $escaped + '"'
 }
 
-# Run a tool, return its output (stdout + stderr). Gives up after $TimeoutSec,
-# so an unreachable phone can never hang the app.
-function Invoke-Tool([string]$Exe, [string[]]$ArgList, [int]$TimeoutSec = 15) {
+# Run a tool, return its output (stdout + stderr, or only stdout with $StdoutOnly).
+# Gives up after $TimeoutSec, so an unreachable phone can never hang the app.
+function Invoke-Tool([string]$Exe, [string[]]$ArgList, [int]$TimeoutSec = 15, [bool]$StdoutOnly = $false) {
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = $Exe
   $psi.Arguments = ($ArgList | ForEach-Object { Quote-Arg $_ }) -join ' '
@@ -128,6 +198,7 @@ function Invoke-Tool([string]$Exe, [string[]]$ArgList, [int]$TimeoutSec = 15) {
     try { $p.Kill() } catch {}
     return ''
   }
+  if ($StdoutOnly) { return $out.Result }
   return ($out.Result + $err.Result)
 }
 
@@ -159,12 +230,9 @@ function Get-Devices {
 
 function Is-NetworkSerial([string]$s) { return ($s -match ':\d+$') -or ($s -match '_adb-tls-connect') }
 
-# The phone connected by cable, if any (network ones have IP:PORT or mDNS names)
-function Get-UsbSerial {
-  foreach ($d in Get-Devices) {
-    if ($d.State -eq 'device' -and -not (Is-NetworkSerial $d.Serial)) { return $d.Serial }
-  }
-  return $null
+# The phones connected by cable (network ones have IP:PORT or mDNS names)
+function Get-UsbSerials {
+  return @(Get-Devices | Where-Object { -not (Is-NetworkSerial $_.Serial) } | ForEach-Object { $_.Serial })
 }
 
 function Get-IfaceIp([string]$serial, [string]$iface) {
@@ -173,24 +241,124 @@ function Get-IfaceIp([string]$serial, [string]$iface) {
   return ''
 }
 
-function Get-SavedIp([string]$kind) {
-  if (-not (Test-Path $IpsFile)) { return '' }
-  foreach ($line in Get-Content $IpsFile) {
-    $parts = $line -split '\s+'
-    if ($parts.Count -ge 2 -and $parts[0] -eq $kind) { return $parts[1] }
+# One line of a shell command's output ('' for "null"/"unknown" or an error)
+function Get-PhoneProp([string]$serial, [string[]]$cmd) {
+  $out = Invoke-Tool $Adb (@('-s', $serial, 'shell') + $cmd) 8 $true
+  $v = ((($out -split "`r?`n") | Select-Object -First 1) -replace "`t", ' ').Trim()
+  if ($v -eq 'null' -or $v -eq 'unknown') { return '' }
+  return $v
+}
+
+# The phone's own serial number: the same over USB and the network, and different
+# for two phones of the same model
+function Get-PhoneId([string]$serial) {
+  $id = Get-PhoneProp $serial @('getprop', 'ro.serialno')
+  if (-not $id) { $id = Get-PhoneProp $serial @('getprop', 'ro.boot.serialno') }
+  if (-not $id) { $id = Get-PhoneProp $serial @('settings', 'get', 'secure', 'android_id') }
+  return $id
+}
+
+# The name set on the phone, else its model
+function Get-PhoneName([string]$serial) {
+  $name = Get-PhoneProp $serial @('settings', 'get', 'global', 'device_name')
+  if (-not $name) { $name = Get-PhoneProp $serial @('getprop', 'ro.product.model') }
+  if (-not $name) { $name = 'Phone' }
+  return $name
+}
+
+# ---- Saved phones ----
+# One entry per phone, told apart by its serial number (not the model, since two
+# phones can be the same model), with its last known Ethernet and Wi-Fi IPs.
+# Most recently used first. The empty id is a phone saved by an older version
+# whose serial isn't known yet; it gets its real id on the first connection.
+$script:Phones = New-Object 'System.Collections.Generic.List[object]'
+
+function New-Phone([string]$id, [string]$name, [string]$eth, [string]$wifi) {
+  return [pscustomobject]@{ Id = $id; Name = $name; Eth = $eth; Wifi = $wifi }
+}
+
+function Load-Phones {
+  $script:Phones.Clear()
+  if (-not (Test-Path $PhonesFile)) { return }
+  try { $doc = New-Object System.Xml.XmlDocument; $doc.Load($PhonesFile) }
+  catch { Log "Couldn't read $PhonesFile : $_"; return }
+  foreach ($e in $doc.SelectNodes('/phones/phone')) {
+    $script:Phones.Add((New-Phone $e.GetAttribute('id') $e.GetAttribute('name') $e.GetAttribute('eth') $e.GetAttribute('wifi')))
   }
+}
+
+function Write-Phones {
+  # An old-version phone with no IPs left has nothing to remember
+  for ($i = $script:Phones.Count - 1; $i -ge 0; $i--) {
+    $p = $script:Phones[$i]
+    if (-not $p.Id -and -not $p.Eth -and -not $p.Wifi) { $script:Phones.RemoveAt($i) }
+  }
+  $doc = New-Object System.Xml.XmlDocument
+  [void]$doc.AppendChild($doc.CreateXmlDeclaration('1.0', 'UTF-8', $null))
+  $root = $doc.CreateElement('phones')
+  [void]$doc.AppendChild($root)
+  foreach ($p in $script:Phones) {
+    $e = $doc.CreateElement('phone')
+    $e.SetAttribute('id', [string]$p.Id)
+    $e.SetAttribute('name', [string]$p.Name)
+    $e.SetAttribute('eth', [string]$p.Eth)
+    $e.SetAttribute('wifi', [string]$p.Wifi)
+    [void]$root.AppendChild($e)
+  }
+  $tmp = "$PhonesFile.tmp"
+  $doc.Save($tmp)
+  Move-Item -Force -Path $tmp -Destination $PhonesFile
+}
+
+function Find-PhoneIndex([string]$id) {
+  for ($i = 0; $i -lt $script:Phones.Count; $i++) {
+    if ($script:Phones[$i].Id -eq $id) { return $i }
+  }
+  return -1
+}
+
+function Get-SavedName([string]$id) {
+  $i = Find-PhoneIndex $id
+  if ($i -ge 0) { return $script:Phones[$i].Name }
   return ''
 }
 
-# Save both IPs; keeps the old value when a new one is empty
-# (e.g. no Ethernet IP while the phone isn't docked).
-function Save-Ips([string]$eth, [string]$wifi) {
-  if (-not $eth)  { $eth  = Get-SavedIp 'eth' }
-  if (-not $wifi) { $wifi = Get-SavedIp 'wifi' }
-  $lines = @()
-  if ($eth)  { $lines += "eth $eth" }
-  if ($wifi) { $lines += "wifi $wifi" }
-  Set-Content -Path $IpsFile -Value $lines -Encoding ASCII
+# Add the phone (at the end) or update it (an empty value keeps the saved one,
+# e.g. no Ethernet IP while undocked), and take its IPs off any other phone
+# (the network gave them to this one).
+function Save-Phone([string]$id, [string]$name, [string]$eth, [string]$wifi) {
+  $idx = Find-PhoneIndex $id
+  if ($idx -lt 0) { $script:Phones.Add((New-Phone $id '' '' '')); $idx = $script:Phones.Count - 1 }
+  for ($i = 0; $i -lt $script:Phones.Count; $i++) {
+    if ($i -eq $idx) { continue }
+    $p = $script:Phones[$i]
+    if ($p.Eth  -and ($p.Eth  -eq $eth -or $p.Eth  -eq $wifi)) { $p.Eth  = '' }
+    if ($p.Wifi -and ($p.Wifi -eq $eth -or $p.Wifi -eq $wifi)) { $p.Wifi = '' }
+  }
+  $p = $script:Phones[$idx]
+  if ($name) { $p.Name = $name }
+  if ($eth)  { $p.Eth  = $eth }
+  if ($wifi) { $p.Wifi = $wifi }
+  Write-Phones
+}
+
+# Move the phone to the top (the default next time)
+function Set-PhoneUsed([string]$id) {
+  $idx = Find-PhoneIndex $id
+  if ($idx -lt 0) { return }
+  $p = $script:Phones[$idx]
+  $script:Phones.RemoveAt($idx)
+  $script:Phones.Insert(0, $p)
+  Write-Phones
+}
+
+function Forget-Ip([string]$id, [string]$ip) {
+  $idx = Find-PhoneIndex $id
+  if ($idx -lt 0) { return }
+  $p = $script:Phones[$idx]
+  if ($p.Eth  -eq $ip) { $p.Eth  = '' }
+  if ($p.Wifi -eq $ip) { $p.Wifi = '' }
+  Write-Phones
 }
 
 # Quick check that something answers at IP:PORT (about 2 s, never hangs)
@@ -231,6 +399,51 @@ function Wait-UsbReady([string]$serial) {
   return $false
 }
 
+# Read which phone is at $serial and its current IPs, and save them.
+# $ip/$kind: the IP we came in on, in case the phone didn't report it.
+# Sets $script:LearnedId, LearnedName, LearnedEth.
+function Learn-Phone([string]$serial, [string]$fallbackId, [string]$ip = '', [string]$kind = '') {
+  $id = Get-PhoneId $serial
+  if (-not $id) { $id = $fallbackId }
+  $name = Get-PhoneName $serial
+  $eth  = Get-IfaceIp $serial 'eth0'
+  $wifi = Get-IfaceIp $serial 'wlan0'
+  if ($ip -and $ip -ne $eth -and $ip -ne $wifi) {
+    if ($kind -eq 'eth') { if (-not $eth) { $eth = $ip } } elseif (-not $wifi) { $wifi = $ip }
+  }
+  $script:LearnedId = $id
+  $script:LearnedName = $name
+  $script:LearnedEth = $eth
+  Save-Phone $id $name $eth $wifi
+}
+
+# $script:Serial is a new network connection. True if the wanted phone answered.
+# If a different phone has this IP now, the IP is moved to that phone (it's
+# added if it's new) and the connection dropped.
+function Claim-Connection([string]$want, [string]$ip, [string]$kind) {
+  Learn-Phone $script:Serial $want $ip $kind
+  if (-not $want -and $script:LearnedId) {
+    # A phone saved by an older version: now we know which one it is
+    $ph = Find-PhoneIndex ''
+    if ($ph -ge 0) {
+      $old = $script:Phones[$ph]
+      $p = $script:Phones[(Find-PhoneIndex $script:LearnedId)]
+      if (-not $p.Eth)  { $p.Eth  = $old.Eth }
+      if (-not $p.Wifi) { $p.Wifi = $old.Wifi }
+      [void]$script:Phones.Remove($old)
+      Write-Phones
+    }
+    $script:ChosenId = $script:LearnedId
+    return $true
+  }
+  if ($script:LearnedId -eq $want) { return $true }
+  Log "  $ip is now another phone ($($script:LearnedName)) - moved the IP to it, disconnecting"
+  Forget-Ip $want $ip
+  [void](Adb @('disconnect', $script:Serial) 5)
+  $script:Serial = $null
+  return $false
+}
+
 # ===================================================================
 Log "PhoneConnect $AppVersion starting"
 
@@ -249,17 +462,22 @@ foreach ($d in Get-Devices) {
   if ($d.State -eq 'offline' -and (Is-NetworkSerial $d.Serial)) { [void](Adb @('disconnect', $d.Serial) 5) }
 }
 
-# ---- Pick the connection. Priority: 1. USB  2. Ethernet (dock)  3. Wi-Fi ----
-$usb = Get-UsbSerial
-if (-not $usb) { Start-Sleep -Seconds 2; $usb = Get-UsbSerial }   # it can vanish for a moment
+# ---- Phones on USB ----
+# For each phone plugged in: save its Ethernet and Wi-Fi IPs and turn on network
+# mode, so later launches can connect without the cable (until the phone restarts).
+Load-Phones
+$migrate = (-not (Test-Path $PhonesFile)) -and (Test-Path $OldIpsFile)
+$usbOf = @{}      # phone id -> USB serial
 
-if ($usb) {
-  # ---- 1. USB ----
-  [void](Wait-UsbReady $usb)
-  $ethNow  = Get-IfaceIp $usb 'eth0'
-  $wifiNow = Get-IfaceIp $usb 'wlan0'
-  Save-Ips $ethNow $wifiNow
-  Log ("Saved IPs - Ethernet: {0}, Wi-Fi: {1}" -f ($(if ($ethNow) { $ethNow } else { 'none' })), ($(if ($wifiNow) { $wifiNow } else { 'none' })))
+$usbList = Get-UsbSerials
+if (-not $usbList) { Start-Sleep -Seconds 2; $usbList = Get-UsbSerials }   # it can vanish for a moment
+
+foreach ($usb in $usbList) {
+  if (-not (Wait-UsbReady $usb)) { Log "USB phone $usb isn't ready (tap Allow on the phone?) - skipping it"; continue }
+  Learn-Phone $usb $usb
+  $usbOf[$script:LearnedId] = $usb
+  $p = $script:Phones[(Find-PhoneIndex $script:LearnedId)]
+  Log ("USB: {0} ({1}) - saved IPs - Ethernet: {2}, Wi-Fi: {3}" -f $p.Name, $p.Id, ($(if ($p.Eth) { $p.Eth } else { 'none' })), ($(if ($p.Wifi) { $p.Wifi } else { 'none' })))
 
   # Turn on network mode for later cable-free launches (only if it's off,
   # because switching it restarts adb on the phone)
@@ -270,46 +488,127 @@ if ($usb) {
     Start-Sleep -Seconds 3
     [void](Wait-UsbReady $usb)
   }
-  $script:Serial = $usb
+}
+
+# ---- First run of this version: move the IPs saved by an older version ----
+# They didn't record which phone they belong to, so ask whoever answers there.
+# The old file only ever held one phone's IPs, so an IP nobody answers at goes
+# to the phone found at the other IP (or the one plugged in by USB).
+if ($migrate) {
+  Log "Moving saved IPs from $OldIpsFile to $PhonesFile"
+  $oldEth = ''; $oldWifi = ''; $oldOwner = $null
+  foreach ($line in Get-Content $OldIpsFile) {
+    $parts = $line -split '\s+'
+    if ($parts.Count -lt 2 -or -not $parts[1] -or ($parts[0] -ne 'eth' -and $parts[0] -ne 'wifi')) { continue }
+    $kind = $parts[0]; $ip = $parts[1]
+    $known = $script:Phones | Where-Object { $_.Eth -eq $ip -or $_.Wifi -eq $ip } | Select-Object -First 1
+    if ($known) { if ($null -eq $oldOwner) { $oldOwner = $known.Id }; continue }   # already known from USB
+    Log "Checking which phone is at $ip..."
+    if (Try-Connect $ip) {
+      Learn-Phone $script:Serial '' $ip $kind
+      if ($null -eq $oldOwner) { $oldOwner = $script:LearnedId }
+      $script:Serial = $null
+    } elseif ($kind -eq 'eth') { $oldEth = $ip } else { $oldWifi = $ip }
+  }
+  if ($null -eq $oldOwner -and $usbOf.Count -eq 1) { $oldOwner = @($usbOf.Keys)[0] }
+  if ($oldEth -or $oldWifi) {
+    $idx = $(if ($oldOwner) { Find-PhoneIndex $oldOwner } else { -1 })
+    if ($idx -ge 0) {
+      $p = $script:Phones[$idx]
+      if (-not $p.Eth)  { $p.Eth  = $oldEth }
+      if (-not $p.Wifi) { $p.Wifi = $oldWifi }
+    } elseif ((Find-PhoneIndex '') -lt 0) {
+      # Nobody answered: keep the IPs, the phone gets identified on its first connection
+      $script:Phones.Add((New-Phone '' 'Phone' $oldEth $oldWifi))
+    }
+  }
+  Write-Phones
+  Remove-Item -Force $OldIpsFile
+}
+
+# ---- Which phone? ----
+# Every saved phone, once each (a phone plugged in by USB is saved above, so it's
+# in the list too, marked "USB"). Asked only when there's more than one.
+if ($script:Phones.Count -eq 0) {
+  Show-Error 'no phone found' ("Plug the phone in with a USB cable once (needed after every phone restart) " +
+    "so PhoneConnect can turn on network mode. Make sure USB debugging is on and you tapped Allow on the phone.")
+  exit 1
+}
+
+$script:ChosenId = $script:Phones[0].Id
+if ($script:Phones.Count -gt 1) {
+  $labels = @(); $defaultLabel = $null
+  foreach ($p in $script:Phones) {
+    $label = $(if ($p.Name) { $p.Name } else { 'Phone' })
+    if (-not $p.Id) { $label += ' (saved by an older version)' }
+    $same = @($script:Phones | Where-Object { $_.Name -eq $p.Name }).Count
+    if ($same -gt 1 -and $p.Id) { $label += ' (...' + $p.Id.Substring([Math]::Max(0, $p.Id.Length - 4)) + ')' }
+    $onUsb = $p.Id -and $usbOf.ContainsKey($p.Id)
+    if ($onUsb) { $label += ' - USB' }
+    if ($onUsb -and -not $defaultLabel) { $defaultLabel = $label }
+    $labels += $label
+  }
+  if (-not $defaultLabel) { $defaultLabel = $labels[0] }
+  $choice = Choose 'Which phone do you want to connect to?' $labels $defaultLabel
+  if (-not $choice) { exit 0 }
+  $script:ChosenId = $script:Phones[[array]::IndexOf($labels, $choice)].Id
+}
+
+# ---- Connect to it. Priority: 1. USB  2. Ethernet (dock)  3. Wi-Fi ----
+if ($script:ChosenId -and $usbOf.ContainsKey($script:ChosenId)) {
+  # ---- 1. USB ----
+  $script:Serial = $usbOf[$script:ChosenId]
   $script:Link = 'USB'
 } else {
   # ---- 2. Ethernet, 3. Wi-Fi ----
   foreach ($kind in @('eth', 'wifi')) {
-    $ip = Get-SavedIp $kind
+    $idx = Find-PhoneIndex $script:ChosenId
+    if ($idx -lt 0) { break }
+    $ip = $(if ($kind -eq 'eth') { $script:Phones[$idx].Eth } else { $script:Phones[$idx].Wifi })
     if (-not $ip) { continue }
     Log "Trying $kind at $ip..."
-    if (Try-Connect $ip) {
+    if ((Try-Connect $ip) -and (Claim-Connection $script:ChosenId $ip $kind)) {
       $script:Link = $(if ($kind -eq 'eth') { 'Ethernet' } else { 'Wi-Fi' })
       break
     }
   }
 
-  # Fallback: a phone connected through Android's Wireless debugging (found automatically)
+  # Fallback: the phone connected through Android's Wireless debugging (found automatically)
   if (-not $script:Serial) {
-    $wd = Get-Devices | Where-Object { $_.State -eq 'device' -and $_.Serial -match '_adb-tls-connect' } | Select-Object -First 1
-    if ($wd) { $script:Serial = $wd.Serial; $script:Link = 'Wireless debugging' }
+    foreach ($wd in (Get-Devices | Where-Object { $_.State -eq 'device' -and $_.Serial -match '_adb-tls-connect' })) {
+      if (-not $script:ChosenId -or (Get-PhoneId $wd.Serial) -eq $script:ChosenId) {
+        $script:Serial = $wd.Serial
+        $script:Link = 'Wireless debugging'
+        Learn-Phone $script:Serial $script:ChosenId
+        $script:ChosenId = $script:LearnedId
+        break
+      }
+    }
   }
 
   if (-not $script:Serial) {
-    Show-Error 'no phone found' ("Plug the phone in with a USB cable once (needed after every phone restart) " +
+    $name = Get-SavedName $script:ChosenId
+    if (-not $name) { $name = 'the phone' }
+    Show-Error "can't reach $name" ("Couldn't reach $name. Plug it in with a USB cable once (needed after every phone restart) " +
       "so PhoneConnect can turn on network mode. Make sure USB debugging is on and you tapped Allow on the phone.")
     exit 1
   }
 
-  # Refresh the saved IPs. This is also how the Ethernet IP gets learned: it only
-  # exists while docked, and then there's no USB, so it's read over Wi-Fi.
-  $ethNow = Get-IfaceIp $script:Serial 'eth0'
-  Save-Ips $ethNow (Get-IfaceIp $script:Serial 'wlan0')
-
+  # The saved IPs were refreshed while connecting. This is also how the Ethernet IP
+  # gets learned: it only exists while docked, and then there's no USB, so it's read over Wi-Fi.
   # Docked but we came in over Wi-Fi: switch this session to Ethernet
+  $ethNow = $script:LearnedEth
   if ($ethNow -and $script:Link -ne 'Ethernet') {
     $prev = $script:Serial
     Log "Phone has Ethernet ($ethNow) - switching to it"
-    if (Try-Connect $ethNow) { $script:Link = 'Ethernet' }
+    if ((Try-Connect $ethNow) -and (Claim-Connection $script:ChosenId $ethNow 'eth')) { $script:Link = 'Ethernet' }
     else { $script:Serial = $prev; Log "Ethernet not reachable, staying on $($script:Link)" }
   }
 }
-Log "Connection: $($script:Link) ($($script:Serial))"
+Set-PhoneUsed $script:ChosenId
+$PhoneName = Get-SavedName $script:ChosenId
+if (-not $PhoneName) { $PhoneName = $script:LearnedName }
+Log "Connection: $PhoneName - $($script:Link) ($($script:Serial))"
 $Serial = $script:Serial
 $Link = $script:Link
 
@@ -385,8 +684,8 @@ function Run-Scrcpy([string[]]$ScrcpyArgs) {
 $common = @('-K', '--video-codec=h265', '--max-fps=60') + $audio
 if ($target -eq 'dex') {
   Log "Mirroring DeX (display $dexId), audio: $choice"
-  Run-Scrcpy (@('-s', $Serial, "--display-id=$dexId") + $common + @('--video-bit-rate=8M', "--window-title=PhoneConnect - DeX ($Link)") + $ExtraArgs)
+  Run-Scrcpy (@('-s', $Serial, "--display-id=$dexId") + $common + @('--video-bit-rate=8M', "--window-title=PhoneConnect - $PhoneName, DeX ($Link)") + $ExtraArgs)
 } else {
   Log "Mirroring phone screen, audio: $choice"
-  Run-Scrcpy (@('-s', $Serial) + $common + @('--max-size=1600', '--video-bit-rate=6M', "--window-title=PhoneConnect ($Link)") + $ExtraArgs)
+  Run-Scrcpy (@('-s', $Serial) + $common + @('--max-size=1600', '--video-bit-rate=6M', "--window-title=PhoneConnect - $PhoneName ($Link)") + $ExtraArgs)
 }
