@@ -1,0 +1,10 @@
+#!/bin/zsh -f
+# Fake scrcpy: no DeX display; "shows the picture" at once, then quits.
+case " $* " in
+  *" --list-displays "*) print "    --display-id=0"; exit 0 ;;
+  *" --version "*) print "scrcpy 0.0 (fake)"; exit 0 ;;
+esac
+print -r -- "$*" > $FAKE/scrcpy_args
+print "INFO: Texture: 1080x2340"
+zmodload zsh/zselect; zselect -t 30     # stay up for 0.3 s
+exit 0

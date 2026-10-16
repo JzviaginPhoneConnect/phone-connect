@@ -1,0 +1,3 @@
+#!/bin/zsh -f
+# Fake sleep: don't wait (keeps the tests fast)
+exit 0
