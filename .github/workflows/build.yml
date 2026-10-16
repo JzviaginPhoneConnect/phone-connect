@@ -130,6 +130,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Logic tests (the shared script with the macOS platform scripts)
+        run: zsh -f tests/run-tests.sh platform/macos
       - name: Build PhoneConnect.app and PhoneConnect.dmg
         run: ./build/build-macos.sh
         env:
@@ -155,6 +157,27 @@ jobs:
         run: .\build\build-windows.ps1
         env:
           APP_VERSION: ${{ needs.version.outputs.build_version }}
+      # Both tests run on the zsh that was just bundled (dist\windows\stage\shell)
+      - name: Logic tests (the shared script with the Windows platform scripts)
+        shell: pwsh
+        run: |
+          $sh = "$PWD\dist\windows\stage\shell\usr\bin"
+          $env:PATH = "$sh;$env:PATH"; $env:LANG = 'C.UTF-8'; $env:MSYS2_ARG_CONV_EXCL = '*'
+          & "$sh\zsh.exe" -f -c 'export TMPDIR="$(cygpath -u "$TEMP")"; zsh -f tests/run-tests.sh dist/windows/stage/platform'
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Smoke test of the Windows platform scripts
+        shell: pwsh
+        run: |
+          $sh = "$PWD\dist\windows\stage\shell\usr\bin"
+          $env:PATH = "$sh;$env:PATH"; $env:LANG = 'C.UTF-8'; $env:MSYS2_ARG_CONV_EXCL = '*'
+          # a test window named scrcpy.exe, for the "picture is up" and stop checks
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\win" | Out-Null
+          & $csc /nologo /target:winexe "/out:$env:RUNNER_TEMP\win\scrcpy.exe" /reference:System.Windows.Forms.dll tests\fakes\window.cs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $env:PCWIN = "$env:RUNNER_TEMP\win\scrcpy.exe"
+          & "$sh\zsh.exe" -f -c 'zsh -f tests/windows-smoke.sh dist/windows/stage "$(cygpath -u "$PCWIN")"'
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: windows

@@ -69,15 +69,17 @@ When you open PhoneConnect:
 ## Repository layout
 
 ```
-macos/PhoneConnect.sh        the Mac app (zsh script, the app's main program)
-windows/PhoneConnect.ps1     the Windows app (PowerShell port of the same logic)
-windows/Launcher.cs          PhoneConnect.exe: starts the script with the icon, no console window
+app/PhoneConnect.sh          the app: one zsh script, the same on Mac and Windows
+platform/macos/, windows/    everything that differs per OS (dialogs, paths, starting scrcpy...),
+                             same script names on both; packaged next to the app script
+windows/Launcher.cs          PhoneConnect.exe: starts the script with the bundled zsh, icon, no console
+tests/                       logic tests with a fake adb and scrcpy (run on both OSes in CI)
 windows/installer.iss        Inno Setup script for PhoneConnect-Setup.exe
 assets/                      icon (PNG, .icns, .ico), installer background, and the scripts that draw them
 VERSION                      the first version, used until the first release tag exists
 build/next-version.sh        works out the next version (x.y.z) from the tags
 build/release-wanted.sh      decides whether a change on main is released or only built
-build/versions.env           pinned scrcpy version and checksums
+build/versions.env           pinned scrcpy version, MSYS2 packages (the Windows shell) and checksums
 build/build-macos.sh         builds the Mac release files, or a developer build with --dev
 build/dmg-settings.py        layout of the .dmg installer window
 build/build-windows.ps1      builds the Windows release files, or a developer build with -Dev
@@ -105,7 +107,7 @@ This builds `dist/dev/PhoneConnect.app` and starts it, closing a running copy fi
 ```
 powershell -ExecutionPolicy Bypass -File build\build-windows.ps1 -Dev -Run
 ```
-This builds a ready-to-run folder `dist\dev\PhoneConnect\` for this PC (Intel/AMD or ARM) and starts it. It needs nothing installed, not even Inno Setup.
+This builds a ready-to-run folder `dist\dev\PhoneConnect\` for this PC (Intel/AMD or ARM) and starts it. It needs nothing installed, not even Inno Setup: scrcpy, the bundled shell and the tools to unpack it are downloaded by the build.
 
 **Builds from GitHub.** Every pull request, and every change on `main` that isn't released, is also built on GitHub. To download the files, open the run under **Actions** and scroll to **Artifacts**.
 

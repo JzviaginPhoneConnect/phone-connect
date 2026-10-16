@@ -1,27 +1,21 @@
 #!/bin/zsh
-# PhoneConnect (macOS) — mirror and control an Android phone with scrcpy.
+# PhoneConnect — mirror and control an Android phone with scrcpy.
+# The same script runs on macOS and Windows (there with the zsh that ships in the
+# app). Anything that differs between them is done by the scripts in platform/
+# (one set per OS, same names; see platform/README.md), never by checks in here.
 # Remembers several phones; asks which one to use when more than one is known.
 # Asks whether to use DeX (if a DeX display exists) and whether to forward audio.
 # Connects over USB, Ethernet (dock) or Wi-Fi, in that order of preference.
 # Any extra arguments are passed straight to scrcpy, e.g.:  PhoneConnect --print-fps
 
 # The build replaces @VERSION@ with the release version (e.g. 1.2.3).
-APP_VERSION="@VERSION@"
+export APP_VERSION="@VERSION@"
 
-# Everything this needs (scrcpy, adb, scrcpy-server) ships inside PhoneConnect.app,
-# so nothing has to be installed. There's one set of tools per Mac type.
-# ${0:A:h} is this script's real folder, even when started through a link.
-case "$(uname -m)" in
-  arm64) MAC_ARCH=arm64 ;;     # Apple Silicon
-  *)     MAC_ARCH=x86_64 ;;    # Intel
-esac
-APP_TOOLS="${0:A:h}/../Resources/tools/$MAC_ARCH"
-export PATH="$APP_TOOLS:/usr/bin:/bin:/usr/sbin:/sbin"
-export ADB="$APP_TOOLS/adb"                          # the adb scrcpy should use
-export SCRCPY_SERVER_PATH="$APP_TOOLS/scrcpy-server"  # the part that runs on the phone
-# scrcpy sits in a small app bundle of its own, so its window gets the PhoneConnect
-# name and icon in the Dock (a bare program gets the generic "exec" icon)
-SCRCPY="$APP_TOOLS/PhoneConnect Mirror.app/Contents/MacOS/scrcpy"
+# Paths, tools and files for this OS: TOOLS_DIR ADB SCRCPY SCRCPY_SERVER_PATH
+# PHONES_FILE OLD_IPS_FILE LOG_FILE TMPDIR OS_INFO. Everything ships with the app,
+# so nothing has to be installed. ${0:A:h} is this script's real folder.
+PLATFORM="${0:A:h}/platform"
+source "$PLATFORM/env.sh"
 
 # ---- Log ----
 # One log with timestamps for everything: this script's messages [app], every adb
@@ -29,7 +23,7 @@ SCRCPY="$APP_TOOLS/PhoneConnect Mirror.app/Contents/MacOS/scrcpy"
 # output [scrcpy]. Each line also has this run's process id, in case two run at
 # once. It's kept across runs; lines older than a day are dropped at start.
 zmodload zsh/datetime
-LOG=/tmp/PhoneConnect.log
+LOG=$LOG_FILE
 [[ -t 1 ]] && ON_TERMINAL=1 || ON_TERMINAL=0
 
 stamp() {         # stamp <source>: timestamp each line read and add it to the log
@@ -56,9 +50,10 @@ exec 3> >(stamp cmd)
 # exit code and its output to the log. LOGGED_LABEL= names the command in the log.
 logged() {
   local out err rc errf
-  errf=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/PhoneConnect.XXXXXX")
+  errf=$(mktemp "$TMPDIR/PhoneConnect.XXXXXX")
   out=$("$@" 2>"$errf"); rc=$?
   err=$(<"$errf"); rm -f "$errf"
+  out=${out//$'\r'/} err=${err//$'\r'/}   # Windows programs end lines with CR LF
   {
     print -r -- "\$ ${LOGGED_LABEL:-$*}  -> exit $rc"
     [[ -n "$out" ]] && print -r -- "$out" | sed 's/^/  | /'
@@ -69,74 +64,56 @@ logged() {
   return $rc
 }
 
-adb() { LOGGED_LABEL="adb $*" logged "$APP_TOOLS/adb" "$@"; }
+adb() { LOGGED_LABEL="adb $*" logged "$ADB" "$@"; }
 
-echo "PhoneConnect $APP_VERSION starting — macOS $(sw_vers -productVersion) ($MAC_ARCH), app: ${0:A}"
-
-# A downloaded app is marked "quarantined" by macOS. Once you've allowed PhoneConnect to
-# open, clear that mark from its own files, so the bundled scrcpy and adb don't
-# each get blocked with their own "can't be opened" warning.
-APP_BUNDLE="${0:A:h:h:h}"
-xattr -dr com.apple.quarantine "$APP_BUNDLE" 2>/dev/null
-
-notify() {
-  osascript -e "display notification \"$2\" with title \"$1\"" 2>/dev/null
+# platform <name> <args...>: run platform/<name>.sh, logged like any other command
+platform() {
+  local name=$1; shift
+  LOGGED_LABEL="platform/$name $*" logged zsh -f "$PLATFORM/$name.sh" "$@"
 }
 
-# alert "Title" "Message": a warning the user has to click away (passed as
-# arguments, so quotes in phone names can't break the AppleScript)
-alert() {
-  osascript - "$APP_VERSION" "$1" "$2" >/dev/null 2>&1 <<'EOF'
-on run argv
-  activate
-  display alert ("PhoneConnect " & item 1 of argv & ": " & item 2 of argv) message (item 3 of argv) as warning buttons {"OK"} default button "OK"
-end run
-EOF
-}
+echo "PhoneConnect $APP_VERSION starting — $OS_INFO, app: ${0:A}"
+platform unquarantine
 
 # ask "Question" "Button A" "Button B" -> prints the chosen button (empty on Cancel)
-# (`activate` brings the dialog to the front, the app itself has no window)
 ask() {
   local answer
-  answer=$(osascript -e 'activate' -e "button returned of (display dialog \"$1\" with title \"PhoneConnect $APP_VERSION\" buttons {\"Cancel\", \"$2\", \"$3\"} default button \"$3\" cancel button \"Cancel\")" 2>/dev/null)
-  echo "Asked: ${1//\\n/ } -> ${answer:-Cancel}" >&2
+  answer=$(platform ask_question "$@")
+  echo "Asked: ${1//$'\n'/ } -> ${answer:-Cancel}" >&2
   print -r -- "$answer"
 }
 
 # choose "Question" "Default item" "Item 1" "Item 2"... -> prints the chosen item (empty on Cancel)
 choose() {
   local answer
-  answer=$(osascript - "$APP_VERSION" "$@" 2>/dev/null <<'EOF'
-on run argv
-  activate
-  set theItems to items 4 thru -1 of argv
-  set answer to choose from list theItems with title ("PhoneConnect " & item 1 of argv) with prompt (item 2 of argv) default items {item 3 of argv} OK button name "Connect"
-  if answer is false then return ""
-  return item 1 of answer
-end run
-EOF
-)
+  answer=$(platform choose_item "$@")
   echo "Asked: $1 (${(j:, :)@[3,-1]}) -> ${answer:-Cancel}" >&2
   print -r -- "$answer"
 }
 
-for tool in "$APP_TOOLS/adb" "$SCRCPY"; do
+# alert "Title" "Message": a warning the user has to click away
+alert() { platform show_alert "$@" >/dev/null; }
+
+for tool in "$ADB" "$SCRCPY"; do
   if [[ ! -x "$tool" ]]; then
     echo "$tool not found" >&2
-    notify "PhoneConnect: ${tool:t} missing" "PhoneConnect.app is incomplete — reinstall it"
+    alert "${tool:t} missing" "PhoneConnect is incomplete. Please reinstall it."
     exit 1
   fi
 done
-echo "Tools: $("$APP_TOOLS/adb" version 2>&1 | head -1), $("$SCRCPY" --version 2>&1 | head -1)"
+echo "Tools: $("$ADB" version 2>&1 | head -1), $("$SCRCPY" --version 2>&1 | head -1)"
+
+# Start adb's background server on its own, without capturing its output: started
+# by a later captured command, it would inherit that output pipe and hold it open.
+"$ADB" start-server >/dev/null 2>&1
+echo "adb server started"
 
 # ---- Saved phones ----
 # One entry per phone, told apart by its serial number (not the model, since two
 # phones can be the same model), with its last known Ethernet and Wi-Fi IPs.
 # Most recently used first. The empty id is a phone saved by an older version
 # whose serial isn't known yet; it gets its real id on the first connection.
-PHONES_FILE="$HOME/.phoneconnect_phones.xml"
-OLD_IPS_FILE="$HOME/.phoneconnect_ips"    # older versions: lines "eth <ip>" and "wifi <ip>"
-[[ ! -e "$OLD_IPS_FILE" && -e "$HOME/.phone_ips" ]] && mv "$HOME/.phone_ips" "$OLD_IPS_FILE"   # from the old "Phone" app
+# (PHONES_FILE and OLD_IPS_FILE, the older single-phone file, come from env.sh)
 typeset -a P_ID P_NAME P_ETH P_WIFI
 
 load_phones() {
@@ -235,10 +212,10 @@ PORT=5555
 SERIAL=""
 LINK=""
 
-# Run a command but give up after N seconds (macOS has no `timeout` command)
+# Run a command but give up after N seconds
 with_timeout() {  # with_timeout SECONDS command...
   local secs=$1; shift
-  LOGGED_LABEL="$* (time limit ${secs}s)" logged perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
+  LOGGED_LABEL="$* (time limit ${secs}s)" logged zsh -f "$PLATFORM/run_with_timeout.sh" "$secs" "$@"
 }
 
 phone_prop() {    # phone_prop <serial> <command...> -> one trimmed line ("null"/"unknown" = empty)
@@ -280,7 +257,7 @@ usb_ready() {     # usb_ready <serial>: wait up to ~10s for the USB connection t
 }
 
 port_open() {     # quick check that something answers at IP:PORT (1-2 s, never hangs)
-  with_timeout 3 nc -z -G 2 "$1" "$PORT" >/dev/null 2>&1
+  platform port_open "$1" "$PORT" >/dev/null 2>&1
 }
 
 try_connect() {   # try_connect IP  -> sets SERIAL on success
@@ -364,10 +341,17 @@ done
 # mode, so later launches can connect without the cable (until the phone restarts).
 typeset -A USB_OF      # phone id -> USB serial
 
-# The phone can vanish from USB for a moment (e.g. right after a mode switch)
-adb devices -l | grep -q ' usb:' || sleep 2
+# Phones on USB: every phone adb lists that isn't a network connection (IP:PORT)
+# or found through Wireless debugging. (`adb devices -l` shows a "usb:" field only
+# on macOS/Linux, so don't rely on it.)
+usb_serials() {
+  adb devices | awk 'NR > 1 && NF >= 2 && $2 != "offline" && $1 !~ /:[0-9]+$/ && $1 !~ /_adb-tls-connect/ {print $1}'
+}
 
-for usb in ${(f)"$(adb devices -l | awk 'NR>1 && / usb:/ {print $1}')"}; do
+# The phone can vanish from USB for a moment (e.g. right after a mode switch)
+[[ -n "$(usb_serials)" ]] || sleep 2
+
+for usb in ${(f)"$(usb_serials)"}; do
   if ! usb_ready "$usb"; then
     echo "USB phone $usb isn't ready (tap Allow on the phone?) — skipping it"
     continue
@@ -395,6 +379,7 @@ if (( MIGRATE )); then
   echo "Moving saved IPs from $OLD_IPS_FILE to $PHONES_FILE"
   OLD_ETH="" OLD_WIFI="" OLD_OWNER=""
   for line in ${(f)"$(<"$OLD_IPS_FILE")"}; do
+    line=${line%$'\r'}                                 # written with Windows line ends there
     kind=${line%% *} ip=${line#* }
     [[ $kind == (eth|wifi) && -n "$ip" && "$ip" != "$kind" ]] || continue
     if (( ${P_ETH[(Ie)$ip]} )); then                        # already known from USB
@@ -432,7 +417,9 @@ fi
 # in the list too, marked "USB"). Asked only when there's more than one.
 if (( ${#P_ID} == 0 )); then
   echo "No phone found. Plug in the cable once (after each phone restart) to turn on network mode." >&2
-  notify "PhoneConnect: no device found" "Plug in the cable once to turn on network mode"
+  alert "no phone found" "Plug the phone in with a USB cable once (needed after every phone restart), so PhoneConnect can turn on network mode.
+
+Make sure USB debugging is on and you tapped Allow on the phone."
   exit 1
 fi
 
@@ -495,8 +482,8 @@ else
     echo "Couldn't connect to $name: every connection attempt failed." >&2
     alert "couldn't connect" "Couldn't connect to $name.
 
-• Connect the phone to this Mac with a USB cable, or
-• make sure the phone is on the same network (Wi-Fi or dock Ethernet) as this Mac.
+• Connect the phone to this computer with a USB cable, or
+• make sure the phone is on the same network (Wi-Fi or dock Ethernet) as this computer.
 
 After the phone restarts, the cable is needed once."
     exit 1
@@ -538,7 +525,9 @@ if [[ -n "$DEX_ID" ]]; then
 fi
 
 # ---- Audio ----
-choice=$(ask "Play the phone's sound on the Mac?\n\n(While on, the phone's own speaker is muted.)" "No audio" "With audio")
+choice=$(ask "Play the phone's sound on this computer?
+
+(While on, the phone's own speaker is muted.)" "No audio" "With audio")
 [[ -z "$choice" ]] && exit 0   # Cancel
 if [[ "$choice" == "With audio" ]]; then
   AUDIO=()
@@ -546,67 +535,26 @@ else
   AUDIO=(--no-audio)
 fi
 
-# Bring scrcpy's window to the front: started from a background app, it opens
-# behind the other windows. Asks macOS directly (no permission needed), checks it
-# worked, and tries again for up to 5 s, since a request made while the window is
-# still starting up is ignored.
-scrcpy_pid() {    # scrcpy_pid <pid>: the scrcpy process started under it (a few levels down)
-  local level p procs=($1) kids
-  for level in 1 2 3 4; do
-    kids=()
-    for p in $procs; do kids+=($(pgrep -P $p)); done
-    for p in $kids; do
-      [[ "$(ps -o comm= -p $p)" == */"PhoneConnect Mirror.app/Contents/MacOS/scrcpy" ]] && { print $p; return 0; }
-    done
-    procs=($kids)
-  done
-  return 1
-}
-
-bring_to_front() {  # bring_to_front <pid of the background job running scrcpy>
-  local spid i front
-  spid=$(scrcpy_pid "$1")
-  if [[ -z "$spid" ]]; then
-    echo "Couldn't find the scrcpy process under pid $1"
-    return 1
-  fi
-  for i in {1..20}; do
-    osascript -l JavaScript -e "ObjC.import('AppKit');
-      var app = \$.NSRunningApplication.runningApplicationWithProcessIdentifier($spid);
-      app.isNil() ? false : app.activateWithOptions(\$.NSApplicationActivateAllWindows | \$.NSApplicationActivateIgnoringOtherApps)" >/dev/null 2>&1
-    sleep 0.25
-    front=$(lsappinfo info -only pid "$(lsappinfo front)" 2>/dev/null | grep -o 'pid = [0-9]*' | grep -o '[0-9]*$')
-    if [[ "$front" == "$spid" ]]; then
-      echo "scrcpy window (pid $spid) is in front (try $i)"
-      return 0
-    fi
-  done
-  echo "Couldn't bring the scrcpy window (pid $spid) to the front; frontmost is pid ${front:-unknown}"
-}
-
 # Start scrcpy and watch it. Over the network it sometimes starts the server on
-# the phone and then stalls instead of showing the picture. If no video frame
-# arrives within 15 s, kill it, clear the tunnels and retry (up to 3 attempts).
+# the phone and then stalls instead of showing the picture. If no picture shows
+# within 15 s, kill it, clear the tunnels and retry (up to 3 attempts).
 run_scrcpy() {
-  local attempt pid ok t rc out="/tmp/PhoneConnect.$$.scrcpy.out"
+  local attempt pid ok t rc out="$TMPDIR/PhoneConnect.$$.scrcpy.out"
   local extra=()
   for attempt in 1 2 3; do
     : > "$out"
     echo "Starting (attempt $attempt): scrcpy ${extra[*]} $*"
-    # `script` runs scrcpy as if in a terminal, so its messages arrive immediately.
-    # Without it they sit in a buffer, the "Texture" (first frame) line shows up
-    # too late, and a working session gets killed.
-    script -q /dev/null "$SCRCPY" "${extra[@]}" "$@" < /dev/null > >(tee -a "$out" | stamp scrcpy) 2>&1 &
+    zsh -f "$PLATFORM/run_scrcpy.sh" "${extra[@]}" "$@" < /dev/null > >(tee -a "$out" | stamp scrcpy) 2>&1 &
     pid=$!
     ok=0
     for t in {1..15}; do
-      grep -aq 'Texture' "$out" 2>/dev/null && { ok=1; break; }  # first frame decoded
-      kill -0 $pid 2>/dev/null || break                           # scrcpy exited
+      zsh -f "$PLATFORM/picture_up.sh" $pid "$out" && { ok=1; break; }   # first frame shown
+      kill -0 $pid 2>/dev/null || break                                 # scrcpy exited
       sleep 1
     done
     if (( ok )); then
       echo "Picture is up"
-      bring_to_front $pid
+      platform bring_to_front $pid
       wait $pid; rc=$?
       echo "scrcpy ended (exit $rc)"
       rm -f "$out"
@@ -617,15 +565,14 @@ run_scrcpy() {
     else
       echo "scrcpy didn't connect (attempt 3 of 3) — giving up"
     fi
-    pkill -P $pid 2>/dev/null; kill $pid 2>/dev/null; sleep 1
-    pkill -9 -P $pid 2>/dev/null; kill -9 $pid 2>/dev/null
+    platform stop_scrcpy $pid
     adb -s "$SERIAL" forward --remove-all >/dev/null 2>&1
     adb -s "$SERIAL" reverse --remove-all >/dev/null 2>&1
     extra=(--force-adb-forward)
     sleep 1
   done
   rm -f "$out"
-  notify "PhoneConnect: couldn't start" "No picture after 3 tries — see /tmp/PhoneConnect.log"
+  alert "couldn't start" "No picture from the phone after 3 tries. Details are in $LOG_FILE"
   exit 1
 }
 

@@ -1,7 +1,7 @@
 // PhoneConnect.exe — the Windows launcher.
-// It carries the app icon and starts PhoneConnect.ps1 with PowerShell, without
-// showing a console window. Any arguments are passed on to the script (and from
-// there to scrcpy).
+// It carries the app icon and starts PhoneConnect.sh (the same script as on macOS)
+// with the zsh that ships in shell\, without showing a console window. Any
+// arguments are passed on to the script (and from there to scrcpy).
 //
 // Built by build/build-windows.ps1 with the C# compiler that ships with Windows
 // (.NET Framework), so it's written in plain C# 5.
@@ -40,33 +40,36 @@ static class Launcher
     static int Main(string[] args)
     {
         string dir = AppDomain.CurrentDomain.BaseDirectory;
-        string script = Path.Combine(dir, "PhoneConnect.ps1");
-        if (!File.Exists(script))
+        string script = Path.Combine(dir, "PhoneConnect.sh");
+        string zsh = Path.Combine(dir, @"shell\usr\bin\zsh.exe");
+        foreach (string needed in new[] { script, zsh })
         {
-            MessageBox.Show("PhoneConnect.ps1 is missing next to PhoneConnect.exe. Please reinstall PhoneConnect.",
-                            "PhoneConnect", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return 1;
+            if (!File.Exists(needed))
+            {
+                MessageBox.Show(Path.GetFileName(needed) + " is missing from the PhoneConnect folder. Please reinstall PhoneConnect.",
+                                "PhoneConnect", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return 1;
+            }
         }
 
-        var cmd = new StringBuilder();
-        cmd.Append("-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File ");
-        cmd.Append(Quote(script));
+        // -f: don't read zsh startup files. The script is given by its name and
+        // found in the working directory, so zsh sees it under its own (/c/...) path.
+        var cmd = new StringBuilder("-f PhoneConnect.sh");
         foreach (string a in args) cmd.Append(' ').Append(Quote(a));
 
-        string powershell = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe");
-        if (!File.Exists(powershell)) powershell = "powershell.exe";
-
-        var psi = new ProcessStartInfo(powershell, cmd.ToString());
+        var psi = new ProcessStartInfo(zsh, cmd.ToString());
         psi.UseShellExecute = false;
         psi.CreateNoWindow = true;     // no console window
         psi.WorkingDirectory = dir;
+        psi.EnvironmentVariables["LANG"] = "C.UTF-8";            // text is UTF-8 throughout
+        psi.EnvironmentVariables["MSYS2_ARG_CONV_EXCL"] = "*";   // pass arguments to Windows programs as given
         try
         {
             Process.Start(psi);
         }
         catch (Exception e)
         {
-            MessageBox.Show("Could not start PowerShell: " + e.Message, "PhoneConnect",
+            MessageBox.Show("Could not start PhoneConnect: " + e.Message, "PhoneConnect",
                             MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }

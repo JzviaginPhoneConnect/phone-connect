@@ -1,0 +1,44 @@
+#!/bin/zsh -f
+# Fake adb. The world it answers from is in $FAKE:
+#   usb        serial|id|name|eth|wifi|tcpport   phones plugged in
+#   net        ip|id|name|eth|wifi               phones answering on the network
+#   connected  ip:port                           current network connections
+F=$FAKE; touch $F/connected $F/usb $F/net
+# answer like Windows adb: lines end with CR LF
+exec > >(sed 's/$/\r/')
+print -r -- "adb $*" >> $F/adb.log
+S=""; [[ $1 == -s ]] && { S=$2; shift 2; }
+row() { if [[ $1 == *:* ]]; then grep "^${1%:*}|" $F/net; else grep "^$1|" $F/usb; fi }
+case $1 in
+  devices)
+    print "List of devices attached"
+    while IFS='|' read -r s rest; do
+      [[ -z $s ]] && continue
+      # like Windows adb: no "usb:" field (macOS adb adds one)
+      if [[ $2 == -l ]]; then print -r -- "$s"$'\t'"device product:x model:X device:x transport_id:1"; else print -r -- "$s"$'\t'"device"; fi
+    done < $F/usb
+    while read -r c; do [[ -n $c ]] && print -r -- "$c"$'\t'"device"; done < $F/connected ;;
+  get-state) [[ -n "$(row "$S")" ]] && print device ;;
+  connect)
+    ip=${2%:*}
+    if grep -q "^$ip|" $F/net; then
+      grep -qx "$2" $F/connected || print -r -- "$2" >> $F/connected
+      print "connected to $2"
+    fi ;;
+  disconnect) grep -vx "$2" $F/connected > $F/c.tmp; mv $F/c.tmp $F/connected ;;
+  tcpip) print -r -- "tcpip $S" >> $F/events ;;
+  shell)
+    shift
+    IFS='|' read -r _ id name eth wifi port <<< "$(row "$S")"
+    case "$*" in
+      "getprop ro.serialno") print -r -- "$id" ;;
+      "getprop ro.product.model") print "SM-S911B" ;;
+      "settings get global device_name") print -r -- "$name" ;;
+      "settings get secure android_id") print "null" ;;
+      "getprop service.adb.tcp.port") print -r -- "$port" ;;
+      "ip -f inet addr show eth0") [[ -n $eth ]] && print -r -- "    inet $eth/24 brd x scope global eth0" ;;
+      "ip -f inet addr show wlan0") [[ -n $wifi ]] && print -r -- "    inet $wifi/24 brd x scope global wlan0" ;;
+    esac ;;
+esac
+exec >&-; wait
+exit 0

@@ -11,7 +11,9 @@
 #
 # Run it with:  powershell -ExecutionPolicy Bypass -File build\build-windows.ps1 [-Dev] [-Run]
 # The release build needs Inno Setup 6 for the installer (https://jrsoftware.org/isdl.php,
-# or `choco install innosetup`); -SkipInstaller builds only the zips. -Dev needs nothing extra.
+# or `choco install innosetup`); -SkipInstaller builds only the zips. Everything else
+# (scrcpy, the MSYS2 shell, and zstd to unpack it if it isn't installed) is downloaded
+# by the build itself and checked against build/versions.env.
 # The version stamped into the app comes from $env:APP_VERSION, e.g. 1.2.3 (the GitHub
 # workflow sets it). Without it, the build is marked as a developer build, e.g.
 # 1.0.4-dev+3f2a1b9 (the next version, then the commit it was built from).
@@ -32,7 +34,10 @@ $DevApp = Join-Path $Dist 'dev/PhoneConnect'
 # ---- versions ----
 $cfg = @{}
 foreach ($line in Get-Content (Join-Path $Root 'build/versions.env')) {
-  if ($line -match '^\s*([A-Z0-9_]+)=(.*)$') { $cfg[$Matches[1]] = $Matches[2].Trim() }
+  if ($line -match '^\s*([A-Z0-9_]+)=(.*)$') { $cfg[$Matches[1]] = $Matches[2].Trim().Trim('"') }
+}
+foreach ($key in @('SCRCPY_VERSION', 'SHA256_WIN64', 'SHA256_WINARM64', 'ZSTD_VERSION', 'ZSTD_WIN64', 'MSYS2_PKG_ZSH', 'MSYS2_PKG_RUNTIME')) {
+  if (-not $cfg[$key]) { throw "build/versions.env has no $key. Is it the same version as this build script?" }
 }
 $ScrcpyVersion = $cfg['SCRCPY_VERSION']
 function Get-DevVersion {
@@ -67,13 +72,13 @@ function Get-ThisArch {
   return 'x64'
 }
 
-function Get-Verified([string]$name, [string]$sha) {
+function Get-Verified([string]$name, [string]$sha, [string]$baseUrl = "https://github.com/Genymobile/scrcpy/releases/download/v$ScrcpyVersion") {
   New-Item -ItemType Directory -Force -Path $Dl | Out-Null
   $file = Join-Path $Dl $name
   if (-not (Test-Path $file) -or (Get-FileHash $file -Algorithm SHA256).Hash -ne $sha.ToUpper()) {
     Write-Host "Downloading $name"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/Genymobile/scrcpy/releases/download/v$ScrcpyVersion/$name" -OutFile $file
+    Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/$name" -OutFile $file
   }
   $got = (Get-FileHash $file -Algorithm SHA256).Hash
   if ($got -ne $sha.ToUpper()) { throw "Checksum mismatch for ${name}: got $got, expected $sha" }
@@ -109,9 +114,53 @@ foreach ($s in $sets) {
   Remove-Item -Recurse -Force $tmp
 }
 
-# ---- the script (saved with a BOM so Windows PowerShell reads it as UTF-8) ----
-$ps1 = (Get-Content (Join-Path $Root 'windows/PhoneConnect.ps1') -Raw).Replace('@VERSION@', $Version)
-[IO.File]::WriteAllText((Join-Path $Stage 'PhoneConnect.ps1'), $ps1, (New-Object Text.UTF8Encoding $true))
+# ---- the shell the script runs on: zsh and a few tools from MSYS2 ----
+# Only usr\bin (programs and their DLLs), usr\lib\zsh (zsh's modules, e.g. datetime
+# for the log's timestamps) and usr\share\licenses are kept; no docs.
+# zstd unpacks them: an installed one if there is one, otherwise the pinned official build
+$zstd = (Get-Command zstd.exe -ErrorAction SilentlyContinue).Source
+if (-not $zstd) {
+  $zName, $zSha = $cfg['ZSTD_WIN64'] -split '\s+'
+  $zZip = Get-Verified $zName $zSha "https://github.com/facebook/zstd/releases/download/v$($cfg['ZSTD_VERSION'])"
+  $zDir = Join-Path $Work 'zstd'
+  Expand-Archive -Path $zZip -DestinationPath $zDir -Force
+  $zstd = (Get-ChildItem $zDir -Recurse -Filter 'zstd.exe' | Select-Object -First 1).FullName
+  if (-not $zstd) { throw "zstd.exe not found in $zName" }
+}
+$msysRoot = Join-Path $Work 'msys2'
+New-Item -ItemType Directory -Force -Path $msysRoot | Out-Null
+foreach ($key in ($cfg.Keys | Where-Object { $_ -like 'MSYS2_PKG_*' } | Sort-Object)) {
+  $name, $sha = $cfg[$key] -split '\s+'
+  $pkg = Get-Verified $name $sha 'https://repo.msys2.org/msys/x86_64'
+  $tar = Join-Path $Work ($name -replace '\.zst$', '')
+  & $zstd -q -d -f -o $tar $pkg
+  if ($LASTEXITCODE -ne 0) { throw "Unpacking $name failed" }
+  & tar.exe -xf $tar -C $msysRoot
+  if ($LASTEXITCODE -ne 0) { throw "Unpacking $name failed" }
+  Remove-Item -Force $tar
+}
+$shell = Join-Path $Stage 'shell'
+foreach ($sub in @('usr/bin', 'usr/lib/zsh', 'usr/share/licenses')) {
+  $from = Join-Path $msysRoot $sub
+  if (Test-Path $from) {
+    $to = Join-Path $shell $sub
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $to) | Out-Null
+    Copy-Item $from $to -Recurse
+  }
+}
+if (-not (Test-Path (Join-Path $shell 'usr/bin/zsh.exe'))) { throw "zsh.exe missing from the MSYS2 packages" }
+
+# ---- the script (the same file as on macOS) and the Windows platform scripts ----
+# Written with Unix line ends and no BOM, since zsh reads them.
+function Write-ShellScript([string]$from, [string]$to) {
+  $text = (Get-Content $from -Raw -Encoding UTF8).Replace("`r`n", "`n").Replace('@VERSION@', $Version)
+  [IO.File]::WriteAllText($to, $text, (New-Object Text.UTF8Encoding $false))
+}
+Write-ShellScript (Join-Path $Root 'app/PhoneConnect.sh') (Join-Path $Stage 'PhoneConnect.sh')
+New-Item -ItemType Directory -Force -Path (Join-Path $Stage 'platform') | Out-Null
+foreach ($f in Get-ChildItem (Join-Path $Root 'platform/windows') -Filter '*.sh') {
+  Write-ShellScript $f.FullName (Join-Path $Stage "platform/$($f.Name)")
+}
 Copy-Item (Join-Path $Root 'assets/PhoneConnect.ico') $Stage
 Copy-Item (Join-Path $Root 'THIRD_PARTY_NOTICES.md') $Stage
 @"
@@ -120,7 +169,7 @@ Mirror and control your Android phone from this PC (powered by scrcpy $ScrcpyVer
 
 Start it from the Start menu or the desktop shortcut.
 Phone setup, tips and troubleshooting: see the README on the project page.
-Log of the last run: %TEMP%\PhoneConnect.log
+Log (the last 24 hours): %TEMP%\PhoneConnect.log
 "@ | Set-Content -Path (Join-Path $Stage 'README.txt') -Encoding ASCII
 
 # ---- PhoneConnect.exe: small launcher with the icon (C# compiler that ships with Windows) ----
@@ -145,13 +194,13 @@ if ($LASTEXITCODE -ne 0) { throw "Compiling the launcher failed" }
 # ---- developer build: a ready-to-run folder for this PC, then stop ----
 if ($Dev) {
   # close a running copy first, so its files can be replaced
-  Get-Process scrcpy, adb -ErrorAction SilentlyContinue |
+  Get-Process scrcpy, adb, zsh -ErrorAction SilentlyContinue |
     Where-Object { $_.Path -and $_.Path.StartsWith($DevApp, [StringComparison]::OrdinalIgnoreCase) } |
     Stop-Process -Force -ErrorAction SilentlyContinue
   if (Test-Path $DevApp) { Remove-Item -Recurse -Force $DevApp }
   New-Item -ItemType Directory -Force -Path $DevApp | Out-Null
-  foreach ($f in @('PhoneConnect.exe', 'PhoneConnect.ps1', 'PhoneConnect.ico', 'README.txt', 'THIRD_PARTY_NOTICES.md')) {
-    Copy-Item (Join-Path $Stage $f) $DevApp
+  foreach ($f in @('PhoneConnect.exe', 'PhoneConnect.sh', 'PhoneConnect.ico', 'README.txt', 'THIRD_PARTY_NOTICES.md', 'platform', 'shell')) {
+    Copy-Item (Join-Path $Stage $f) $DevApp -Recurse
   }
   Copy-Item (Join-Path $Stage "tools-$thisArch") (Join-Path $DevApp 'tools') -Recurse
   Remove-Item -Recurse -Force $Work
@@ -165,8 +214,8 @@ if ($Dev) {
 foreach ($arch in @('x64', 'arm64')) {
   $folder = Join-Path $Work "PhoneConnect-$arch/PhoneConnect"
   New-Item -ItemType Directory -Force -Path $folder | Out-Null
-  foreach ($f in @('PhoneConnect.exe', 'PhoneConnect.ps1', 'PhoneConnect.ico', 'README.txt', 'THIRD_PARTY_NOTICES.md')) {
-    Copy-Item (Join-Path $Stage $f) $folder
+  foreach ($f in @('PhoneConnect.exe', 'PhoneConnect.sh', 'PhoneConnect.ico', 'README.txt', 'THIRD_PARTY_NOTICES.md', 'platform', 'shell')) {
+    Copy-Item (Join-Path $Stage $f) $folder -Recurse
   }
   Copy-Item (Join-Path $Stage "tools-$arch") (Join-Path $folder 'tools') -Recurse
   Compress-Archive -Path $folder -DestinationPath (Join-Path $Dist "PhoneConnect-Windows-$arch-portable.zip")

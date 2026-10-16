@@ -114,8 +114,11 @@ EOF
 done
 
 # ---- the app itself ----
-sed "s/@VERSION@/$VERSION/g" "$ROOT/macos/PhoneConnect.sh" > "$APP/Contents/MacOS/PhoneConnect"
+# the shared script (the same file as on Windows) plus the macOS platform scripts
+sed "s/@VERSION@/$VERSION/g" "$ROOT/app/PhoneConnect.sh" > "$APP/Contents/MacOS/PhoneConnect"
 chmod 755 "$APP/Contents/MacOS/PhoneConnect"
+mkdir -p "$APP/Contents/MacOS/platform"
+cp "$ROOT"/platform/macos/*.sh "$APP/Contents/MacOS/platform/"
 cp "$ROOT/assets/PhoneConnect.icns" "$APP/Contents/Resources/PhoneConnect.icns"
 cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/"
 

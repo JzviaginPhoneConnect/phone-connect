@@ -10,11 +10,34 @@ A one-click Mac and Windows app that mirrors and controls an Android phone with
 scrcpy release builds, pinned and checksum-verified in `build/versions.env`), so the
 end user installs nothing and never opens a terminal.
 
-- `macos/PhoneConnect.sh` — the Mac app. A **zsh** script that is the app bundle's
-  main executable (`PhoneConnect.app/Contents/MacOS/PhoneConnect`).
-- `windows/PhoneConnect.ps1` — PowerShell 5.1 port with the same behaviour.
-  `windows/Launcher.cs` → `PhoneConnect.exe` (icon, starts the script hidden).
-  `windows/installer.iss` → Inno Setup installer.
+- `app/PhoneConnect.sh` — **the app, one zsh script for both OSes, identical on each,
+  with no platform checks.** Mac: it's the bundle's main executable
+  (`PhoneConnect.app/Contents/MacOS/PhoneConnect`). Windows: `windows/Launcher.cs` →
+  `PhoneConnect.exe` (icon) starts it hidden with the bundled MSYS2 zsh
+  (`{app}\shell\usr\bin\zsh.exe -f PhoneConnect.sh`, env `LANG=C.UTF-8`,
+  `MSYS2_ARG_CONV_EXCL=*`). `windows/installer.iss` → Inno Setup installer.
+- `platform/macos/*.sh`, `platform/windows/*.sh` — everything OS-specific, same names and
+  interfaces on both, packaged next to the script as `platform/`. The script sources
+  `env.sh` and runs the rest as `zsh -f platform/<name>.sh …` (logged):
+  `env.sh` (paths, tools, files, `OS_INFO`), `unquarantine`, `ask_question`,
+  `choose_item`, `show_alert`, `run_with_timeout`, `port_open`, `run_scrcpy`,
+  `picture_up`, `stop_scrcpy`, `bring_to_front`. Anything new that differs per OS goes
+  in a new platform script, never an `if` in the main script.
+- Windows platform scripts use PowerShell snippets via `run_ps` (`_windows.sh`): code
+  written to a temp `.ps1`, data passed only in `PC_*` env vars, output forced to UTF-8.
+  The PowerShell code must stay ASCII (PowerShell 5.1 reads BOM-less files as ANSI).
+- Windows shell: 17 pinned MSYS2 packages (`MSYS2_PKG_*` in `build/versions.env`,
+  unpacked with `zstd` — an installed one, else the pinned `ZSTD_WIN64` the build
+  downloads), only `usr/bin`, `usr/lib/zsh`, `usr/share/licenses` kept.
+  Paths for Windows programs (scrcpy reads `ADB`, `SCRCPY_SERVER_PATH`) via `cygpath -m`;
+  MSYS process ids → Windows ids via `ps -l` (`scrcpy_winpid`).
+- USB phones = `adb devices` serials that aren't `ip:port` or `_adb-tls-connect`
+  (`usb_serials`). Don't use the `usb:` field of `adb devices -l`: Windows adb doesn't print it.
+- Windows programs (adb.exe…) end lines with CR LF: `logged` strips `\r` from every
+  captured output, so compare only output that went through `adb`/`logged`.
+- `.gitattributes` keeps `*.sh` LF (zsh breaks on CRLF; the Windows runner checks out CRLF).
+- Tests: `tests/run-tests.sh <platform dir>` (logic, fakes in `tests/fakes`, runs on both
+  OSes in CI), `tests/windows-smoke.sh` (real Windows platform scripts, CI only).
 - Builds: `build/build-macos.sh [--dev] [--run]`, `build/build-windows.ps1 [-Dev] [-Run] [-SkipInstaller]`.
 - CI: `.github/workflows/build.yml` (PR builds; on main: version → build → tag
   `vX.Y.Z` → GitHub release), `version-preview.yml` (PR comment with the version).
@@ -67,7 +90,6 @@ the system's `xmllint`), `%APPDATA%\PhoneConnect\phones.xml` on Windows.
   `ips.txt`) is migrated — old IPs are probed to find the phone; an IP nobody answers at
   goes to the phone found at the other one (or the single USB phone), else to a
   placeholder with an empty id that gets its real id on its first connection.
-- The Windows script must stay ASCII-only (PowerShell 5.1 reads BOM-less files as ANSI).
 
 Connection, in order of preference: **USB → Ethernet → Wi-Fi**.
 - While on USB (every phone plugged in): read the phone's `eth0` and `wlan0` IPs, save
@@ -98,15 +120,18 @@ Things tried and **rejected**:
 
 Watchdog: if no video frame arrives within 15 s, kill scrcpy, clear adb
 forward/reverse tunnels, retry with `--force-adb-forward` (3 attempts).
+This is `picture_up.sh`:
 - **Mac:** detection greps scrcpy's output for `Texture`. scrcpy **buffers stdout
-  when it isn't a terminal**, so it's run through `script -q /dev/null scrcpy …`
-  (a pty). Without that, working sessions were killed as "stalled". Don't remove it.
+  when it isn't a terminal**, so `run_scrcpy.sh` runs it through `script -q /dev/null
+  scrcpy …` (a pty). Without that, working sessions were killed as "stalled". Don't remove it.
 - **Windows:** scrcpy shows its window only on the first frame, so success =
-  `Process.MainWindowHandle != 0` (no output parsing needed).
+  `Process.MainWindowHandle != 0` (no output parsing needed). Its output reaches the log
+  through a pipe, so it can arrive in bursts.
 
-Mac log: `/tmp/PhoneConnect.log`, one file for everything, each line
+Log (`LOG_FILE`: Mac `/tmp/PhoneConnect.log`, Windows `%TEMP%\PhoneConnect.log`; the same
+code on both), one file for everything, each line
 `date time.ms [pid source]`: `app` = the script's messages and dialog answers, `cmd` =
-every adb/tool command (via `logged`/`with_timeout`) with exit code, output (`|`) and
+every adb/tool/platform command (via `logged`, `with_timeout`, `platform`) with exit code, output (`|`) and
 errors (`!`), `scrcpy` = scrcpy's own output (run with `-V debug`). Appended across runs;
 lines older than 24 h are dropped at start.
 
@@ -114,7 +139,7 @@ Mac window: scrcpy lives in its own bundle, `tools/<arch>/PhoneConnect Mirror.ap
 (`CFBundleName` PhoneConnect + icon), so the Dock shows PhoneConnect, not the "exec"
 icon — a binary started directly inside a `.app` gets that bundle's identity. Started
 from the background launcher it opens behind other windows, so after the first frame
-the script activates it (`NSRunningApplication … activateWithOptions` through
+`bring_to_front.sh` activates it (`NSRunningApplication … activateWithOptions` through
 `osascript -l JavaScript`, no permission needed), checks `lsappinfo front`, and retries
 for 5 s. A request made while the window is still starting is silently ignored.
 The pid to activate is scrcpy's own, found by walking down from `$!` (`scrcpy_pid`):
@@ -139,13 +164,14 @@ Dialogs start with `activate` so they come to the front.
 
 ## Testing without a phone
 
-Real tests need a real computer and phone. For logic, use fakes: a fake `adb` (bash) that
-answers `devices`, `shell ip … eth0/wlan0`, `getprop`, `tcpip`, `connect`, and a fake
-`scrcpy` that can "stall" (sleep) N times, then prints `Texture`. Run the Mac script
-under bash with a `print` shim, or the Windows script under `pwsh` with WinForms
-dialogs and `MainWindowHandle` swapped for stand-ins. Lint: `actionlint` (with
-shellcheck) for workflows, `shellcheck -x build/*.sh`, PowerShell's parser for `.ps1`.
-The `.dmg`, the `.exe` compile (csc) and Inno Setup only run on GitHub's Mac/Windows runners.
+Real tests need a real computer and phone. For logic: `zsh -f tests/run-tests.sh
+platform/macos` — the real script and platform scripts with fakes for adb, scrcpy,
+dialogs, port probe and picture check (`tests/fakes`); the same suite runs on Windows in
+CI with the bundled zsh, plus `tests/windows-smoke.sh` for the real Windows platform
+scripts (dialogs only parsed: `PC_PS_CHECK=1`). Lint: `zsh -n`, `actionlint` (with
+shellcheck) for workflows, `shellcheck -x build/*.sh`.
+The `.dmg`, the `.exe` compile (csc), the MSYS2 shell and Inno Setup only run on GitHub's
+Mac/Windows runners (or a real Windows PC with `build\build-windows.ps1 -Dev`, which needs nothing installed).
 
 ## Status
 
