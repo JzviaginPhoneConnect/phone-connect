@@ -120,6 +120,40 @@ chmod 755 "$APP/Contents/MacOS/PhoneConnect"
 mkdir -p "$APP/Contents/MacOS/platform"
 cp "$ROOT"/platform/macos/*.sh "$APP/Contents/MacOS/platform/"
 cp "$ROOT/assets/PhoneConnect.icns" "$APP/Contents/Resources/PhoneConnect.icns"
+
+# ---- the status window (what's happening, until the picture appears): a small Swift
+# app, one file for Apple Silicon and Intel, with PhoneConnect's name and icon ----
+status_app="$APP/Contents/Resources/PhoneConnect Status.app/Contents"
+if command -v swiftc >/dev/null && command -v lipo >/dev/null; then
+  mkdir -p "$status_app/MacOS" "$status_app/Resources"
+  tmp="$(mktemp -d)"
+  for arch in arm64 x86_64; do
+    swiftc -O -target "$arch-apple-macos12" "$ROOT/macos/StatusWindow.swift" -o "$tmp/status-$arch"
+  done
+  lipo -create "$tmp/status-arm64" "$tmp/status-x86_64" -output "$status_app/MacOS/PhoneConnectStatus"
+  rm -rf "$tmp"
+  cp "$ROOT/assets/PhoneConnect.icns" "$status_app/Resources/PhoneConnect.icns"
+  cat > "$status_app/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>PhoneConnect</string>
+  <key>CFBundleDisplayName</key><string>PhoneConnect</string>
+  <key>CFBundleIdentifier</key><string>io.github.phoneconnect.status</string>
+  <key>CFBundleExecutable</key><string>PhoneConnectStatus</string>
+  <key>CFBundleIconFile</key><string>PhoneConnect</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>$NUMERIC_VERSION</string>
+  <key>CFBundleVersion</key><string>$NUMERIC_VERSION</string>
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+EOF
+else
+  echo "Note: no Swift compiler (Xcode command line tools), so no status window in this build" >&2
+fi
 cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/"
 
 cat > "$APP/Contents/Info.plist" <<EOF

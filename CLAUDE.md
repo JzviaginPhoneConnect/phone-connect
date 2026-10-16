@@ -21,7 +21,21 @@ end user installs nothing and never opens a terminal.
   `env.sh` and runs the rest as `zsh -f platform/<name>.sh …` (logged):
   `env.sh` (paths, tools, files, `OS_INFO`), `unquarantine`, `ask_question`,
   `choose_item`, `show_alert`, `run_with_timeout`, `port_open`, `run_scrcpy`,
-  `picture_up`, `stop_scrcpy`, `bring_to_front`. Anything new that differs per OS goes
+  `picture_up`, `stop_scrcpy`, `bring_to_front`, `status_window`.
+- Status window: the script's `status "text"` appends a plain-language step to
+  `$TMPDIR/PhoneConnect.<pid>.status` (and logs `Status: text`); `status --done` writes
+  `__done__`. The window (Mac: `macos/StatusWindow.swift` → `Contents/Resources/PhoneConnect
+  Status.app`, built with swiftc for arm64+x86_64; Windows: `PhoneConnect.exe --status`)
+  polls the file every 0.25 s and closes on `__done__` or when `<file>.alive` (refreshed
+  every 0.5 s by a background loop in the script) goes stale for 5 s. Cancel only creates
+  `<file>.cancel`; the script's loop sees it and stops the script (EXIT trap: `__done__`,
+  stop a still-starting scrcpy, remove the files). Keep status lines short and
+  non-technical; details go to the log.
+- **The window programs must not touch other processes** (no kill/taskkill/process
+  lookups). The first status-window build, whose windows killed the script's process on
+  Cancel, was the first whose artifact zips (Mac and Windows) Chrome blocked as
+  dangerous, and DeepInstinct flagged it; that change was the only new program in both.
+  Everything that controls processes stays in the scripts. Anything new that differs per OS goes
   in a new platform script, never an `if` in the main script.
 - Windows platform scripts use PowerShell snippets via `run_ps` (`_windows.sh`): code
   written to a temp `.ps1`, data passed only in `PC_*` env vars, output forced to UTF-8.
