@@ -85,6 +85,12 @@ run_app $C
 check "chooser lists each phone once, told apart" file_has choose_args 'Galaxy S23 (…1111) — USB'
 check "chooser has the second phone" file_has choose_args 'Galaxy S23 (…2222) — USB'
 check "chosen USB phone used over USB" logged_line "Connection: Galaxy S23 — USB (usbB)"
+check "status: looking for USB phones" logged_line "Status: Looking for phones on USB…"
+check "status: found each USB phone" logged_line "Status: Found Galaxy S23 on USB"
+check "status: setting up for cable-free use" logged_line "Status: Setting up Galaxy S23 for cable-free use…"
+check "status: asked to choose" logged_line "Status: Choose a phone…"
+check "status: waiting for the picture" logged_line "Status: Waiting for the picture…"
+check "status window started with the status file" file_has status_file "PhoneConnect."
 check "network mode turned on only where it was off" file_has events "tcpip usbB"
 check "  ...not on the phone that had it" eval '! file_has events "tcpip usbA"'
 check "both phones saved, used one first" xml_is "$(xml '  <phone id="BBB2222" name="Galaxy S23" eth="" wifi="10.0.0.8"/>' '  <phone id="AAA1111" name="Galaxy S23" eth="192.168.1.50" wifi="10.0.0.7"/>')"
@@ -102,6 +108,9 @@ print '10.0.0.8|CCC3333|Pixel 8||10.0.0.8' > $C/net
 print 'Galaxy S23 (…2222)' > $C/choice
 run_app $C
 check "noticed the other phone" logged_line "10.0.0.8 is now another phone (Pixel 8)"
+check "status: tried Wi-Fi" logged_line "Status: Connecting to Galaxy S23 over Wi-Fi (10.0.0.8)…"
+check "status: the address belongs to another phone" logged_line "Status: 10.0.0.8 is now Pixel 8 — trying the next address"
+check "status: couldn't connect" logged_line "Status: Couldn't connect to Galaxy S23"
 check "told the user it couldn't connect" file_has alert "Couldn't connect to Galaxy S23."
 check "IP moved to the new phone" xml_is "$(xml '  <phone id="AAA1111" name="Galaxy S23" eth="192.168.1.50" wifi="10.0.0.20"/>' '  <phone id="BBB2222" name="Galaxy S23" eth="" wifi=""/>' '  <phone id="CCC3333" name="Pixel 8" eth="" wifi="10.0.0.8"/>')"
 
@@ -128,6 +137,8 @@ print "== docked: came in over Wi-Fi, switches to the new Ethernet IP"
 print '10.0.0.7|DDD4444|Moto G|192.168.1.60|10.0.0.7\n192.168.1.60|DDD4444|Moto G|192.168.1.60|10.0.0.7' > $C/net
 run_app $C
 check "switched to Ethernet" logged_line "Connection: Moto G — Ethernet (192.168.1.60:5555)"
+check "status: switching to Ethernet" logged_line "Status: Switching to Ethernet (192.168.1.60)…"
+check "status file removed at the end" eval '[[ ! -e "$(<$FAKE/status_file)" ]]'
 check "Ethernet IP learned" xml_is "$(xml '  <phone id="DDD4444" name="Moto G" eth="192.168.1.60" wifi="10.0.0.7"/>')"
 
 # ==== 3. nothing saved, nothing plugged in ====

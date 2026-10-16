@@ -21,7 +21,15 @@ end user installs nothing and never opens a terminal.
   `env.sh` and runs the rest as `zsh -f platform/<name>.sh …` (logged):
   `env.sh` (paths, tools, files, `OS_INFO`), `unquarantine`, `ask_question`,
   `choose_item`, `show_alert`, `run_with_timeout`, `port_open`, `run_scrcpy`,
-  `picture_up`, `stop_scrcpy`, `bring_to_front`. Anything new that differs per OS goes
+  `picture_up`, `stop_scrcpy`, `bring_to_front`, `status_window`.
+- Status window: the script's `status "text"` appends a plain-language step to
+  `$TMPDIR/PhoneConnect.<pid>.status` (and logs `Status: text`); `status --done` writes
+  `__done__`. The window (Mac: `macos/StatusWindow.swift` → `Contents/Resources/PhoneConnect
+  Status.app`, built with swiftc for arm64+x86_64; Windows: `PhoneConnect.exe --status`)
+  polls the file every 0.25 s, closes on `__done__` or when the script's pid is gone; its
+  Cancel stops the script (SIGTERM / `taskkill /T`). The script's EXIT trap writes `__done__`
+  and stops a still-starting scrcpy. Keep status lines short and non-technical; details
+  go to the log. Anything new that differs per OS goes
   in a new platform script, never an `if` in the main script.
 - Windows platform scripts use PowerShell snippets via `run_ps` (`_windows.sh`): code
   written to a temp `.ps1`, data passed only in `PC_*` env vars, output forced to UTF-8.

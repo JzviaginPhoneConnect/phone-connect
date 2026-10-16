@@ -77,6 +77,35 @@ platform() {
 }
 
 echo "PhoneConnect $APP_VERSION starting — $OS_INFO, app: ${0:A}"
+
+# ---- Status window ----
+# A small PhoneConnect window shows the user what's happening, in plain words, until
+# the picture appears. status "text" adds a line (also logged as "Status: text");
+# status --done closes the window. It also closes when this script ends, however
+# it ends (the EXIT trap), and its Cancel button stops this script.
+STATUS_FILE="$TMPDIR/PhoneConnect.$$.status"
+status() {
+  if [[ "$1" == --done ]]; then
+    print -r -- "__done__" >> "$STATUS_FILE"
+  else
+    print -r -- "$1" >> "$STATUS_FILE"
+    echo "Status: $1"
+  fi
+}
+SCRCPY_JOB=""
+on_exit() {
+  status --done
+  # stopped (e.g. Cancel) while still waiting for the picture: don't leave scrcpy behind
+  [[ -n "$SCRCPY_JOB" ]] && kill -0 $SCRCPY_JOB 2>/dev/null && platform stop_scrcpy $SCRCPY_JOB
+  # the window also closes once this process is gone, so the file can go now
+  zf_rm -f "$STATUS_FILE"
+}
+trap on_exit EXIT
+trap 'exit 143' TERM INT HUP
+: > "$STATUS_FILE"
+status "Starting…"
+platform status_window "$STATUS_FILE" $$ >/dev/null
+
 platform unquarantine
 
 # ask "Question" "Button A" "Button B" -> prints the chosen button (empty on Cancel)
@@ -270,6 +299,7 @@ try_connect() {   # try_connect IP  -> sets SERIAL on success
   # otherwise `adb connect` can hang for over a minute.
   if ! port_open "$1"; then
     echo "  $1 not reachable"
+    status "$1 isn't answering"
     return 1
   fi
   for i in 1 2; do
@@ -326,6 +356,7 @@ claim_connection() {
   fi
   [[ "$LEARNED_ID" == "$want" ]] && return 0
   echo "  $2 is now another phone ($LEARNED_NAME) — moved the IP to it, disconnecting"
+  status "$2 is now $LEARNED_NAME — trying the next address"
   forget_ip "$want" "$2"
   adb disconnect "$SERIAL" >/dev/null 2>&1
   SERIAL=""
@@ -352,23 +383,27 @@ usb_serials() {
   adb devices | awk 'NR > 1 && NF >= 2 && $2 != "offline" && $1 !~ /:[0-9]+$/ && $1 !~ /_adb-tls-connect/ {print $1}'
 }
 
+status "Looking for phones on USB…"
 # The phone can vanish from USB for a moment (e.g. right after a mode switch)
 [[ -n "$(usb_serials)" ]] || sleep 2
 
 for usb in ${(f)"$(usb_serials)"}; do
   if ! usb_ready "$usb"; then
     echo "USB phone $usb isn't ready (tap Allow on the phone?) — skipping it"
+    status "A phone on USB isn't ready — tap Allow on the phone"
     continue
   fi
   learn_phone "$usb" "$usb"
   USB_OF[$LEARNED_ID]=$usb
   idx=$(phone_index "$LEARNED_ID")
   echo "USB: $LEARNED_NAME ($LEARNED_ID) — saved IPs — Ethernet: ${P_ETH[idx]:-none}, Wi-Fi: ${P_WIFI[idx]:-none}"
+  status "Found $LEARNED_NAME on USB"
 
   # Turn on network mode for later cable-free launches (only if it isn't on already,
   # because switching it restarts adb on the phone)
   if [[ "$(adb -s "$usb" shell getprop service.adb.tcp.port 2>/dev/null | tr -d '\r')" != "$PORT" ]]; then
     echo "Turning on network mode (port $PORT)"
+    status "Setting up $LEARNED_NAME for cable-free use…"
     adb -s "$usb" tcpip $PORT >/dev/null 2>&1
     sleep 3
     usb_ready "$usb"
@@ -392,6 +427,7 @@ if (( MIGRATE )); then
       OLD_OWNER=${OLD_OWNER:-${P_ID[${P_WIFI[(Ie)$ip]}]}}; continue
     fi
     echo "Checking which phone is at $ip..."
+    status "Checking which phone is at $ip…"
     if try_connect "$ip"; then
       learn_phone "$SERIAL" "" "$ip" "$kind"
       OLD_OWNER=${OLD_OWNER:-$LEARNED_ID}
@@ -445,6 +481,7 @@ if (( ${#P_ID} > 1 )); then
     LABELS+=("$(phone_label $i)")
     [[ -z "$DEFAULT_LABEL" && -n "${P_ID[i]}" && -n "${USB_OF[${P_ID[i]}]}" ]] && DEFAULT_LABEL=${LABELS[i]}
   done
+  status "Choose a phone…"
   choice=$(choose "Which phone do you want to connect to?" "${DEFAULT_LABEL:-${LABELS[1]}}" "${LABELS[@]}")
   [[ -z "$choice" ]] && exit 0   # Cancel
   CHOSEN_ID=${P_ID[${LABELS[(ie)$choice]}]}
@@ -462,6 +499,7 @@ else
     [[ $kind == eth ]] && ip=${P_ETH[idx]} || ip=${P_WIFI[idx]}
     [[ -z "$ip" ]] && continue
     echo "Trying $kind at $ip..."
+    status "Connecting to $(phone_saved_name "$CHOSEN_ID") over ${${kind:s/eth/Ethernet}:s/wifi/Wi-Fi} ($ip)…"
     if try_connect "$ip" && claim_connection "$CHOSEN_ID" "$ip" $kind; then
       [[ $kind == eth ]] && LINK="Ethernet" || LINK="Wi-Fi"
       break
@@ -484,6 +522,7 @@ else
   if [[ -z "$SERIAL" ]]; then
     name=$(phone_saved_name "$CHOSEN_ID"); name=${name:-the phone}
     echo "Couldn't connect to $name: every connection attempt failed." >&2
+    status "Couldn't connect to $name"
     alert "couldn't connect" "Couldn't connect to $name.
 
 • Connect the phone to this computer with a USB cable, or
@@ -500,6 +539,7 @@ After the phone restarts, the cable is needed once."
   if [[ -n "$LEARNED_ETH" && "$LINK" != "Ethernet" ]]; then
     PREV_SERIAL=$SERIAL
     echo "Phone has Ethernet ($LEARNED_ETH) — switching to it"
+    status "Switching to Ethernet ($LEARNED_ETH)…"
     if try_connect "$LEARNED_ETH" && claim_connection "$CHOSEN_ID" "$LEARNED_ETH" eth; then
       LINK="Ethernet"
     else
@@ -513,6 +553,9 @@ mark_used "$CHOSEN_ID"
 PHONE_NAME=$(phone_saved_name "$CHOSEN_ID"); PHONE_NAME=${PHONE_NAME:-$LEARNED_NAME}
 CONN=(-s "$SERIAL")
 echo "Connection: $PHONE_NAME — $LINK ($SERIAL)"
+status "Connected to $PHONE_NAME over $LINK"
+
+status "Looking for a DeX screen…"
 
 # ---- Look for a DeX (external) display: any display other than 0 ----
 DEX_ID=$(LOGGED_LABEL="scrcpy ${CONN[*]} --list-displays" logged "$SCRCPY" "${CONN[@]}" --list-displays 2>&1 \
@@ -548,8 +591,11 @@ run_scrcpy() {
   for attempt in 1 2 3; do
     : > "$out"
     echo "Starting (attempt $attempt): scrcpy ${extra[*]} $*"
+    if (( attempt == 1 )); then status "Waiting for the picture…"
+    else status "No picture yet — retrying (attempt $attempt of 3)…"; fi
     zsh -f "$PLATFORM/run_scrcpy.sh" "${extra[@]}" "$@" < /dev/null > >(tee -a "$out" | stamp scrcpy) 2>&1 &
     pid=$!
+    SCRCPY_JOB=$pid
     ok=0
     for t in {1..15}; do
       zsh -f "$PLATFORM/picture_up.sh" $pid "$out" && { ok=1; break; }   # first frame shown
@@ -558,6 +604,7 @@ run_scrcpy() {
     done
     if (( ok )); then
       echo "Picture is up"
+      status --done
       platform bring_to_front $pid
       wait $pid; rc=$?
       echo "scrcpy ended (exit $rc)"
@@ -576,6 +623,7 @@ run_scrcpy() {
     sleep 1
   done
   rm -f "$out"
+  status "No picture from the phone after 3 tries"
   alert "couldn't start" "No picture from the phone after 3 tries. Details are in $LOG_FILE"
   exit 1
 }

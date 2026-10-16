@@ -61,6 +61,26 @@ check "stopped" eval '! kill -0 $job 2>/dev/null'
 check "window process gone" eval '! "$SYSDIR/tasklist.exe" /FI "IMAGENAME eq scrcpy.exe" 2>/dev/null | grep -qi scrcpy.exe'
 rm -f $out
 
+print "== status_window (PhoneConnect.exe --status)"
+status_running() { "$SYSDIR/tasklist.exe" /FI "IMAGENAME eq PhoneConnect.exe" 2>/dev/null | grep -qi PhoneConnect.exe; }
+sf=$TMPDIR/pc-smoke.status
+print 'Looking for phones on USB…' > $sf
+sleep 60 &
+fake_main=$!
+check "starts" plat status_window $sf $fake_main
+zselect -t 300
+check "window process running" status_running
+print __done__ >> $sf
+zselect -t 200
+check "closes on __done__" eval '! status_running'
+print 'Waiting for the picture…' > $sf
+plat status_window $sf $fake_main
+zselect -t 300
+kill $fake_main
+zselect -t 200
+check "closes when PhoneConnect is gone" eval '! status_running'
+rm -f $sf
+
 print
 print "$PASS passed, $FAIL failed"
 (( FAIL == 0 ))

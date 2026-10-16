@@ -172,7 +172,8 @@ Phone setup, tips and troubleshooting: see the README on the project page.
 Log (the last 24 hours): %TEMP%\PhoneConnect.log
 "@ | Set-Content -Path (Join-Path $Stage 'README.txt') -Encoding ASCII
 
-# ---- PhoneConnect.exe: small launcher with the icon (C# compiler that ships with Windows) ----
+# ---- PhoneConnect.exe: small launcher with the icon, and the status window (--status)
+#      (C# compiler that ships with Windows) ----
 $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 if (-not (Test-Path $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework/v4.0.30319/csc.exe' }
 if (-not (Test-Path $csc)) { throw "C# compiler not found (.NET Framework 4 is part of Windows 10/11)" }
@@ -187,7 +188,7 @@ $versionCs = Join-Path $Work 'Version.cs'
 & $csc /nologo /target:winexe /optimize+ /platform:anycpu `
   "/out:$(Join-Path $Stage 'PhoneConnect.exe')" `
   "/win32icon:$(Join-Path $Root 'assets/PhoneConnect.ico')" `
-  /reference:System.Windows.Forms.dll `
+  /reference:System.Windows.Forms.dll /reference:System.Drawing.dll `
   (Join-Path $Root 'windows/Launcher.cs') $versionCs
 if ($LASTEXITCODE -ne 0) { throw "Compiling the launcher failed" }
 
