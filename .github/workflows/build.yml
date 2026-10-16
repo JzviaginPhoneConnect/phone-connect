@@ -143,6 +143,28 @@ jobs:
             dist/PhoneConnect.dmg
             dist/PhoneConnect-macOS.zip
           if-no-files-found: error
+      # ---- TEMPORARY: find which part makes Chrome block the download. Each part is its
+      # own artifact (not on main); download each in Chrome and see which is blocked. ----
+      - name: "Probe: split the Mac app into parts"
+        if: github.ref != 'refs/heads/main'
+        run: |
+          mkdir -p probe/status probe/app-without-status probe/tools
+          cp -R "dist/macos/PhoneConnect.app/Contents/Resources/PhoneConnect Status.app" probe/status/
+          cp -R dist/macos/PhoneConnect.app probe/app-without-status/
+          rm -rf "probe/app-without-status/PhoneConnect.app/Contents/Resources/PhoneConnect Status.app"
+          cp -R dist/macos/PhoneConnect.app/Contents/Resources/tools probe/tools/
+      - if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with: { name: probe-mac-1-status-window-only, path: probe/status }
+      - if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with: { name: probe-mac-2-app-without-status-window, path: probe/app-without-status }
+      - if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with: { name: probe-mac-3-scrcpy-and-adb-only, path: probe/tools }
+      - if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with: { name: probe-mac-4-dmg-only, path: dist/PhoneConnect.dmg }
 
   windows:
     name: Build Windows
@@ -186,6 +208,19 @@ jobs:
             dist/PhoneConnect-Windows-x64-portable.zip
             dist/PhoneConnect-Windows-arm64-portable.zip
           if-no-files-found: error
+      # ---- TEMPORARY: find which part makes Chrome block the download (see the Mac job) ----
+      - if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with: { name: probe-win-1-PhoneConnect-exe-only, path: dist/windows/stage/PhoneConnect.exe }
+      - if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with: { name: probe-win-2-shell-only, path: dist/windows/stage/shell }
+      - if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with: { name: probe-win-3-scrcpy-and-adb-only, path: dist/windows/stage/tools-x64 }
+      - if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with: { name: probe-win-4-setup-exe-only, path: dist/PhoneConnect-Setup.exe }
 
   release:
     name: Release
