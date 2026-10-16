@@ -65,21 +65,21 @@ print "== status_window (PhoneConnect.exe --status)"
 status_running() { "$SYSDIR/tasklist.exe" /FI "IMAGENAME eq PhoneConnect.exe" 2>/dev/null | grep -qi PhoneConnect.exe; }
 sf=$TMPDIR/pc-smoke.status
 print 'Looking for phones on USB…' > $sf
-sleep 60 &
-fake_main=$!
-check "starts" plat status_window $sf $fake_main
+{ for i in {1..40}; do : > $sf.alive; zselect -t 50; done } &!   # "PhoneConnect running" for 20 s
+check "starts" plat status_window $sf
 zselect -t 300
 check "window process running" status_running
 print __done__ >> $sf
 zselect -t 200
 check "closes on __done__" eval '! status_running'
 print 'Waiting for the picture…' > $sf
-plat status_window $sf $fake_main
+: > $sf.alive
+plat status_window $sf
 zselect -t 300
-kill $fake_main
-zselect -t 200
-check "closes when PhoneConnect is gone" eval '! status_running'
-rm -f $sf
+check "running again" status_running
+zselect -t 2200                                   # the alive file stops being refreshed
+check "closes once PhoneConnect is gone (alive file stale)" eval '! status_running'
+rm -f $sf $sf.alive $sf.cancel
 
 print
 print "$PASS passed, $FAIL failed"

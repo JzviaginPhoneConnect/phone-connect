@@ -170,6 +170,18 @@ run_app $C
 check "lines older than a day dropped" eval "! grep -qF 'a very old line' $LOG && ! grep -qF 'old format' $LOG"
 check "earlier runs kept" eval "grep -qF 'Galaxy S23 — USB (usbB)' $LOG"
 
+# ==== 6. Cancel in the status window ====
+C=$WORK/cancel; mkdir -p $C
+print "== Cancel pressed while the phone list is open"
+print '10.0.0.7|AAA1111|Galaxy S23||10.0.0.7\n10.0.0.8|BBB2222|Pixel 8||10.0.0.8' > $C/net
+xml '  <phone id="AAA1111" name="Galaxy S23" eth="" wifi="10.0.0.7"/>' '  <phone id="BBB2222" name="Pixel 8" eth="" wifi="10.0.0.8"/>' > $C/phones.xml
+: > $C/cancel_on_choose
+run_app $C
+check "the app stopped itself" logged_line "Cancel pressed in the status window — stopping"
+check "  ...and didn't go on to connect" eval '! run_log | grep -qF "Connection:"'
+check "status window files cleaned up" eval '[[ -z "$(print -l $(<$FAKE/status_file)*(N))" ]]'
+rm -f $C/cancel_on_choose
+
 print
 print "$PASS passed, $FAIL failed (log: $LOG)"
 (( FAIL == 0 ))

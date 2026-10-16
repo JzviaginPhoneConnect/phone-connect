@@ -81,8 +81,12 @@ echo "PhoneConnect $APP_VERSION starting — $OS_INFO, app: ${0:A}"
 # ---- Status window ----
 # A small PhoneConnect window shows the user what's happening, in plain words, until
 # the picture appears. status "text" adds a line (also logged as "Status: text");
-# status --done closes the window. It also closes when this script ends, however
-# it ends (the EXIT trap), and its Cancel button stops this script.
+# status --done closes the window. The window only reads and writes files, never
+# touches processes (antivirus scanners distrust small programs that kill others):
+#   STATUS_FILE         the lines to show; "__done__" closes it
+#   STATUS_FILE.alive   refreshed every 0.5 s while this script runs; when it goes
+#                       stale (script gone, however it ended) the window closes
+#   STATUS_FILE.cancel  created by the window's Cancel button; this script then stops
 STATUS_FILE="$TMPDIR/PhoneConnect.$$.status"
 status() {
   if [[ "$1" == --done ]]; then
@@ -93,18 +97,37 @@ status() {
   fi
 }
 SCRCPY_JOB=""
+STATUS_WATCHER=""
 on_exit() {
   status --done
+  [[ -n "$STATUS_WATCHER" ]] && kill $STATUS_WATCHER 2>/dev/null
   # stopped (e.g. Cancel) while still waiting for the picture: don't leave scrcpy behind
   [[ -n "$SCRCPY_JOB" ]] && kill -0 $SCRCPY_JOB 2>/dev/null && platform stop_scrcpy $SCRCPY_JOB
-  # the window also closes once this process is gone, so the file can go now
+  zf_rm -f "$STATUS_FILE.alive" "$STATUS_FILE.cancel"
+  # give the window a moment to read "__done__" before the file goes
+  zselect -t 50
   zf_rm -f "$STATUS_FILE"
 }
 trap on_exit EXIT
 trap 'exit 143' TERM INT HUP
+zmodload zsh/zselect             # zselect -t N: wait N/100 s without starting a program
 : > "$STATUS_FILE"
+: > "$STATUS_FILE.alive"
+# Keeps STATUS_FILE.alive fresh, and stops this script when Cancel was pressed
+{
+  while true; do
+    if [[ -e "$STATUS_FILE.cancel" ]]; then
+      echo "Cancel pressed in the status window — stopping"
+      kill -TERM $$
+      break
+    fi
+    : > "$STATUS_FILE.alive"
+    zselect -t 50
+  done
+} &!
+STATUS_WATCHER=$!
 status "Starting…"
-platform status_window "$STATUS_FILE" $$ >/dev/null
+platform status_window "$STATUS_FILE" >/dev/null
 
 platform unquarantine
 

@@ -3,7 +3,7 @@
 // with the zsh that ships in shell\, without showing a console window. Any
 // arguments are passed on to the script (and from there to scrcpy).
 //
-// PhoneConnect.exe --status <status file> <pid> is the status window instead: it
+// PhoneConnect.exe --status <status file> is the status window instead: it
 // shows, in plain words, what PhoneConnect is doing until the phone's picture appears
 // (started by platform\status_window.sh; the macOS version is macos/StatusWindow.swift).
 //
@@ -44,12 +44,10 @@ static class Launcher
     [STAThread]
     static int Main(string[] args)
     {
-        if (args.Length >= 3 && args[0] == "--status")
+        if (args.Length >= 2 && args[0] == "--status")
         {
-            int pid;
-            if (!int.TryParse(args[2], out pid)) return 2;
             Application.EnableVisualStyles();
-            Application.Run(new StatusWindow(args[1], pid));
+            Application.Run(new StatusWindow(args[1]));
             return 0;
         }
 
@@ -92,22 +90,24 @@ static class Launcher
 }
 
 // The status window. PhoneConnect.sh appends one line per step to the status file; the
-// newest is shown large with a moving bar, the few before it small. Closes when a line
-// "__done__" appears or the PhoneConnect process (pid) is gone. Cancel stops PhoneConnect.
+// newest is shown large with a moving bar, the few before it small. It only reads and
+// writes files (no process handling, which antivirus scanners distrust):
+//   <status file>         a line "__done__" closes the window
+//   <status file>.alive   PhoneConnect.sh refreshes it; when it goes stale, it's gone
+//   <status file>.cancel  Cancel creates it; PhoneConnect.sh then stops itself
 sealed class StatusWindow : Form
 {
     readonly string statusPath;
-    readonly int mainPid;
+    readonly DateTime started = DateTime.UtcNow;
     readonly Label current = new Label();
     readonly Label earlier = new Label();
     readonly Timer timer = new Timer();
     int shownLines = -1;
     bool closingQuietly;
 
-    public StatusWindow(string statusPath, int mainPid)
+    public StatusWindow(string statusPath)
     {
         this.statusPath = statusPath;
-        this.mainPid = mainPid;
 
         Text = "PhoneConnect";
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -122,7 +122,7 @@ sealed class StatusWindow : Form
         picture.Size = new Size(48, 48);
         picture.SizeMode = PictureBoxSizeMode.Zoom;
         picture.Margin = new Padding(0, 0, 16, 0);
-        picture.Image = AppIcon(48).ToBitmap();
+        picture.Image = AppImage(128);
 
         current.Text = "Starting...";
         current.Font = new Font("Segoe UI Semibold", 12f);
@@ -192,27 +192,49 @@ sealed class StatusWindow : Form
         FormClosing += delegate(object sender, FormClosingEventArgs e)
         {
             // closing it with the X means the same as Cancel
-            if (!closingQuietly && e.CloseReason == CloseReason.UserClosing) StopPhoneConnect();
+            if (!closingQuietly && e.CloseReason == CloseReason.UserClosing) AskToStop();
         };
     }
 
-    static Icon AppIcon(int size)
+    // The app picture for the window, from PhoneConnect.ico: the smallest image at least
+    // `size` pixels wide. Its images are stored as PNG, which Icon.ToBitmap() turns into
+    // noise on .NET Framework, so the PNG is read directly.
+    static Image AppImage(int size)
     {
-        string ico = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PhoneConnect.ico");
-        try { if (File.Exists(ico)) return new Icon(ico, size, size); } catch (Exception) { }
-        return Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+        try
+        {
+            byte[] ico = File.ReadAllBytes(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PhoneConnect.ico"));
+            int count = BitConverter.ToUInt16(ico, 4), best = -1, bestWidth = 0;
+            for (int i = 0; i < count; i++)
+            {
+                int width = ico[6 + 16 * i] == 0 ? 256 : ico[6 + 16 * i];
+                bool better = best < 0 || (bestWidth < size ? width > bestWidth : width >= size && width < bestWidth);
+                if (better) { best = i; bestWidth = width; }
+            }
+            if (best >= 0)
+            {
+                int length = BitConverter.ToInt32(ico, 6 + 16 * best + 8);
+                int offset = BitConverter.ToInt32(ico, 6 + 16 * best + 12);
+                using (var png = new MemoryStream(ico, offset, length))
+                using (var image = Image.FromStream(png))
+                    return new Bitmap(image);
+            }
+        }
+        catch (Exception) { }
+        return Icon.ExtractAssociatedIcon(Application.ExecutablePath).ToBitmap();
     }
 
-    bool MainAlive()
+    // PhoneConnect.sh refreshes <status file>.alive every 0.5 s while it runs
+    bool PhoneConnectRunning()
     {
-        try { return !Process.GetProcessById(mainPid).HasExited; }
-        catch (ArgumentException) { return false; }      // no such process
-        catch (Exception) { return true; }                // can't tell: keep showing
+        string alive = statusPath + ".alive";
+        if (!File.Exists(alive)) return (DateTime.UtcNow - started).TotalSeconds < 5;   // not there (yet)
+        return (DateTime.UtcNow - File.GetLastWriteTimeUtc(alive)).TotalSeconds < 5;
     }
 
     void Poll()
     {
-        if (!MainAlive()) { CloseQuietly(); return; }
+        if (!PhoneConnectRunning()) { CloseQuietly(); return; }
         string[] lines;
         try
         {
@@ -244,21 +266,13 @@ sealed class StatusWindow : Form
 
     void CancelPhoneConnect()
     {
-        StopPhoneConnect();
+        AskToStop();
         CloseQuietly();
     }
 
-    // Stop PhoneConnect's script and everything it started (its zsh, adb calls, scrcpy)
-    void StopPhoneConnect()
+    // PhoneConnect.sh watches for this file and stops itself (and what it started)
+    void AskToStop()
     {
-        try
-        {
-            var psi = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "taskkill.exe"),
-                                           "/T /F /PID " + mainPid);
-            psi.UseShellExecute = false;
-            psi.CreateNoWindow = true;
-            Process.Start(psi).WaitForExit(5000);
-        }
-        catch (Exception) { }
+        try { File.WriteAllText(statusPath + ".cancel", ""); } catch (Exception) { }
     }
 }
