@@ -104,6 +104,22 @@ forward/reverse tunnels, retry with `--force-adb-forward` (3 attempts).
 - **Windows:** scrcpy shows its window only on the first frame, so success =
   `Process.MainWindowHandle != 0` (no output parsing needed).
 
+Mac log: `/tmp/PhoneConnect.log`, one file for everything, each line
+`date time.ms [pid source]`: `app` = the script's messages and dialog answers, `cmd` =
+every adb/tool command (via `logged`/`with_timeout`) with exit code, output (`|`) and
+errors (`!`), `scrcpy` = scrcpy's own output (run with `-V debug`). Appended across runs;
+lines older than 24 h are dropped at start.
+
+Mac window: scrcpy lives in its own bundle, `tools/<arch>/PhoneConnect Mirror.app`
+(`CFBundleName` PhoneConnect + icon), so the Dock shows PhoneConnect, not the "exec"
+icon — a binary started directly inside a `.app` gets that bundle's identity. Started
+from the background launcher it opens behind other windows, so after the first frame
+the script activates it (`NSRunningApplication … activateWithOptions` through
+`osascript -l JavaScript`, no permission needed), checks `lsappinfo front`, and retries
+for 5 s. A request made while the window is still starting is silently ignored.
+Don't use System Events `set frontmost`: it needs an Automation permission prompt.
+Dialogs start with `activate` so they come to the front.
+
 ## Gotchas already hit
 
 - zsh: `"$1:$PORT"` is parsed as a history modifier (`$1:$…`) → "bad output format

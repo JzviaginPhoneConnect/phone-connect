@@ -19,10 +19,59 @@ APP_TOOLS="${0:A:h}/../Resources/tools/$MAC_ARCH"
 export PATH="$APP_TOOLS:/usr/bin:/bin:/usr/sbin:/sbin"
 export ADB="$APP_TOOLS/adb"                          # the adb scrcpy should use
 export SCRCPY_SERVER_PATH="$APP_TOOLS/scrcpy-server"  # the part that runs on the phone
+# scrcpy sits in a small app bundle of its own, so its window gets the PhoneConnect
+# name and icon in the Dock (a bare program gets the generic "exec" icon)
+SCRCPY="$APP_TOOLS/PhoneConnect Mirror.app/Contents/MacOS/scrcpy"
 
-# Started from Launchpad there's no Terminal to show messages, so keep a log
-[[ -t 1 ]] || exec > /tmp/PhoneConnect.log 2>&1
-echo "PhoneConnect $APP_VERSION ($(date '+%Y-%m-%d %H:%M:%S'))"
+# ---- Log ----
+# One log with timestamps for everything: this script's messages [app], every adb
+# (and other tool) command with its exit code and output [cmd], and scrcpy's own
+# output [scrcpy]. Each line also has this run's process id, in case two run at
+# once. It's kept across runs; lines older than a day are dropped at start.
+zmodload zsh/datetime
+LOG=/tmp/PhoneConnect.log
+[[ -t 1 ]] && ON_TERMINAL=1 || ON_TERMINAL=0
+
+stamp() {         # stamp <source>: timestamp each line read and add it to the log
+  local line t ts
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    t=$EPOCHREALTIME
+    strftime -s ts '%Y-%m-%d %H:%M:%S' ${t%.*}
+    line=${line//$'\r'/}; line=${line//$'\b'/}; line=${line#'^D'}   # terminal leftovers from `script`
+    line="$ts.${${t#*.}[1,3]} [$$ $1] $line"
+    print -r -- "$line" >> "$LOG"
+    (( ON_TERMINAL )) && print -r -- "$line" > /dev/tty
+  done
+}
+
+if [[ -f "$LOG" ]]; then
+  strftime -s LOG_CUTOFF '%Y-%m-%d %H:%M:%S' $(( EPOCHSECONDS - 86400 ))
+  awk -v c="$LOG_CUTOFF" '/^[0-9][0-9][0-9][0-9]-/ && substr($0, 1, 19) >= c' "$LOG" > "$LOG.$$" \
+    && mv -f "$LOG.$$" "$LOG"
+fi
+exec > >(stamp app) 2>&1
+exec 3> >(stamp cmd)
+
+# logged <command...>: run it and pass its output on, writing the command, its
+# exit code and its output to the log. LOGGED_LABEL= names the command in the log.
+logged() {
+  local out err rc errf
+  errf=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/PhoneConnect.XXXXXX")
+  out=$("$@" 2>"$errf"); rc=$?
+  err=$(<"$errf"); rm -f "$errf"
+  {
+    print -r -- "\$ ${LOGGED_LABEL:-$*}  -> exit $rc"
+    [[ -n "$out" ]] && print -r -- "$out" | sed 's/^/  | /'
+    [[ -n "$err" ]] && print -r -- "$err" | sed 's/^/  ! /'
+  } >&3
+  [[ -n "$out" ]] && print -r -- "$out"
+  [[ -n "$err" ]] && print -r -- "$err" >&2
+  return $rc
+}
+
+adb() { LOGGED_LABEL="adb $*" logged "$APP_TOOLS/adb" "$@"; }
+
+echo "PhoneConnect $APP_VERSION starting — macOS $(sw_vers -productVersion) ($MAC_ARCH), app: ${0:A}"
 
 # A downloaded app is marked "quarantined" by macOS. Once you've allowed PhoneConnect to
 # open, clear that mark from its own files, so the bundled scrcpy and adb don't
@@ -35,9 +84,11 @@ notify() {
 }
 
 # ask "Question" "Button A" "Button B" -> prints the chosen button (empty on Cancel)
+# (`activate` brings the dialog to the front, the app itself has no window)
 ask() {
   local answer
-  answer=$(osascript -e "button returned of (display dialog \"$1\" with title \"PhoneConnect $APP_VERSION\" buttons {\"Cancel\", \"$2\", \"$3\"} default button \"$3\" cancel button \"Cancel\")" 2>/dev/null)
+  answer=$(osascript -e 'activate' -e "button returned of (display dialog \"$1\" with title \"PhoneConnect $APP_VERSION\" buttons {\"Cancel\", \"$2\", \"$3\"} default button \"$3\" cancel button \"Cancel\")" 2>/dev/null)
+  echo "Asked: ${1//\\n/ } -> ${answer:-Cancel}" >&2
   print -r -- "$answer"
 }
 
@@ -46,6 +97,7 @@ choose() {
   local answer
   answer=$(osascript - "$APP_VERSION" "$@" 2>/dev/null <<'EOF'
 on run argv
+  activate
   set theItems to items 4 thru -1 of argv
   set answer to choose from list theItems with title ("PhoneConnect " & item 1 of argv) with prompt (item 2 of argv) default items {item 3 of argv} OK button name "Connect"
   if answer is false then return ""
@@ -53,16 +105,18 @@ on run argv
 end run
 EOF
 )
+  echo "Asked: $1 (${(j:, :)@[3,-1]}) -> ${answer:-Cancel}" >&2
   print -r -- "$answer"
 }
 
-for tool in adb scrcpy; do
-  if ! command -v $tool >/dev/null; then
-    echo "$tool not found in $APP_TOOLS" >&2
-    notify "PhoneConnect: $tool missing" "PhoneConnect.app is incomplete — reinstall it"
+for tool in "$APP_TOOLS/adb" "$SCRCPY"; do
+  if [[ ! -x "$tool" ]]; then
+    echo "$tool not found" >&2
+    notify "PhoneConnect: ${tool:t} missing" "PhoneConnect.app is incomplete — reinstall it"
     exit 1
   fi
 done
+echo "Tools: $("$APP_TOOLS/adb" version 2>&1 | head -1), $("$SCRCPY" --version 2>&1 | head -1)"
 
 # ---- Saved phones ----
 # One entry per phone, told apart by its serial number (not the model, since two
@@ -172,7 +226,8 @@ LINK=""
 
 # Run a command but give up after N seconds (macOS has no `timeout` command)
 with_timeout() {  # with_timeout SECONDS command...
-  perl -e 'alarm shift; exec @ARGV' "$@"
+  local secs=$1; shift
+  LOGGED_LABEL="$* (time limit ${secs}s)" logged perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
 }
 
 phone_prop() {    # phone_prop <serial> <command...> -> one trimmed line ("null"/"unknown" = empty)
@@ -453,7 +508,7 @@ CONN=(-s "$SERIAL")
 echo "Connection: $PHONE_NAME — $LINK ($SERIAL)"
 
 # ---- Look for a DeX (external) display: any display other than 0 ----
-DEX_ID=$(scrcpy "${CONN[@]}" --list-displays 2>&1 \
+DEX_ID=$(LOGGED_LABEL="scrcpy ${CONN[*]} --list-displays" logged "$SCRCPY" "${CONN[@]}" --list-displays 2>&1 \
   | grep -o 'display-id=[0-9]*' \
   | cut -d= -f2 \
   | grep -v '^0$' \
@@ -475,18 +530,41 @@ else
   AUDIO=(--no-audio)
 fi
 
+# Bring scrcpy's window to the front: started from a background app, it opens
+# behind the other windows. Asks macOS directly (no permission needed), checks it
+# worked, and tries again for up to 5 s, since a request made while the window is
+# still starting up is ignored.
+bring_to_front() {  # bring_to_front <pid of `script`>
+  local spid i front
+  spid=$(pgrep -P "$1" | head -1)       # scrcpy runs as a child of `script`
+  [[ -z "$spid" ]] && return
+  for i in {1..20}; do
+    osascript -l JavaScript -e "ObjC.import('AppKit');
+      var app = \$.NSRunningApplication.runningApplicationWithProcessIdentifier($spid);
+      app.isNil() ? false : app.activateWithOptions(\$.NSApplicationActivateAllWindows | \$.NSApplicationActivateIgnoringOtherApps)" >/dev/null 2>&1
+    sleep 0.25
+    front=$(lsappinfo info -only pid "$(lsappinfo front)" 2>/dev/null | grep -o 'pid = [0-9]*' | grep -o '[0-9]*$')
+    if [[ "$front" == "$spid" ]]; then
+      echo "scrcpy window (pid $spid) is in front (try $i)"
+      return 0
+    fi
+  done
+  echo "Couldn't bring the scrcpy window (pid $spid) to the front; frontmost is pid ${front:-unknown}"
+}
+
 # Start scrcpy and watch it. Over the network it sometimes starts the server on
 # the phone and then stalls instead of showing the picture. If no video frame
 # arrives within 15 s, kill it, clear the tunnels and retry (up to 3 attempts).
 run_scrcpy() {
-  local attempt pid ok t out=/tmp/PhoneConnect.scrcpy.out
+  local attempt pid ok t rc out="/tmp/PhoneConnect.$$.scrcpy.out"
   local extra=()
   for attempt in 1 2 3; do
     : > "$out"
+    echo "Starting (attempt $attempt): scrcpy ${extra[*]} $*"
     # `script` runs scrcpy as if in a terminal, so its messages arrive immediately.
     # Without it they sit in a buffer, the "Texture" (first frame) line shows up
     # too late, and a working session gets killed.
-    script -q /dev/null scrcpy "${extra[@]}" "$@" < /dev/null > >(tee -a "$out") 2>&1 &
+    script -q /dev/null "$SCRCPY" "${extra[@]}" "$@" < /dev/null > >(tee -a "$out" | stamp scrcpy) 2>&1 &
     pid=$!
     ok=0
     for t in {1..15}; do
@@ -495,8 +573,12 @@ run_scrcpy() {
       sleep 1
     done
     if (( ok )); then
-      wait $pid
-      exit $?
+      echo "Picture is up"
+      bring_to_front $pid
+      wait $pid; rc=$?
+      echo "scrcpy ended (exit $rc)"
+      rm -f "$out"
+      exit $rc
     fi
     if (( attempt < 3 )); then
       echo "scrcpy didn't connect (attempt $attempt of 3) — retrying"
@@ -510,11 +592,13 @@ run_scrcpy() {
     extra=(--force-adb-forward)
     sleep 1
   done
+  rm -f "$out"
   notify "PhoneConnect: couldn't start" "No picture after 3 tries — see /tmp/PhoneConnect.log"
   exit 1
 }
 
-COMMON=(--video-codec=h265 --max-fps=60 "${AUDIO[@]}")
+# -V debug: scrcpy's detailed messages, for the log
+COMMON=(--video-codec=h265 --max-fps=60 -V debug "${AUDIO[@]}")
 
 if [[ "$TARGET" == "dex" ]]; then
   echo "Mirroring DeX (display $DEX_ID), audio: $choice"
