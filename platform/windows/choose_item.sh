@@ -36,9 +36,8 @@ $list = New-Object System.Windows.Forms.ListBox
 $list.Name = "list"
 $list.Font = $form.Font
 $list.Width = 400
-$list.IntegralHeight = $true
+$list.IntegralHeight = $false
 $list.Items.AddRange([object[]]$items)
-$list.Height = [Math]::Min($items.Count, 10) * $list.ItemHeight + 6
 $list.SelectedItem = $env:PC_DEFAULT
 if ($list.SelectedIndex -lt 0) { $list.SelectedIndex = 0 }
 $list.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 16)
@@ -66,6 +65,13 @@ foreach ($caption in @("Cancel", "Connect")) {
 }
 $outer.Controls.Add($buttons)
 $form.Controls.Add($outer)
+# Size the list once the form is scaled to the display (e.g. 200 %): a row per
+# phone, up to 10; the auto-sizing form grows with it.
+$form.Add_Load({
+  $l = $this.Controls.Find("list", $true)[0]
+  $rows = [Math]::Min($l.Items.Count, 10)
+  $l.ClientSize = New-Object System.Drawing.Size($l.ClientSize.Width, ($l.ItemHeight * $rows))
+})
 $form.Add_Shown({ $this.Activate() })
 [void]$form.ShowDialog()
 $answer = [string]$form.Tag
