@@ -12,7 +12,11 @@
 ROOT=${0:A:h:h}
 PLAT=${1:?usage: run-tests.sh <platform dir>}
 PLAT=${PLAT:A}
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/phoneconnect-tests.XXXXXX")
+# zsh writes here-documents to $TMPPREFIX (default /tmp/zsh); in the app's Windows
+# shell /tmp doesn't exist, so keep zsh's temporary files in TMPDIR too
+export TMPDIR=${TMPDIR:-/tmp}
+export TMPPREFIX="$TMPDIR/zsh"
+WORK=$(mktemp -d "$TMPDIR/phoneconnect-tests.XXXXXX")
 PASS=0 FAIL=0
 
 # ---- a test copy of the app: real script + platform, fakes on top ----
