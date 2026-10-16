@@ -117,6 +117,8 @@ from the background launcher it opens behind other windows, so after the first f
 the script activates it (`NSRunningApplication … activateWithOptions` through
 `osascript -l JavaScript`, no permission needed), checks `lsappinfo front`, and retries
 for 5 s. A request made while the window is still starting is silently ignored.
+The pid to activate is scrcpy's own, found by walking down from `$!` (`scrcpy_pid`):
+`$!` is a zsh subshell, its child is `script`, and only below that is scrcpy.
 Don't use System Events `set frontmost`: it needs an Automation permission prompt.
 Dialogs start with `activate` so they come to the front.
 

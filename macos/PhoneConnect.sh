@@ -534,10 +534,26 @@ fi
 # behind the other windows. Asks macOS directly (no permission needed), checks it
 # worked, and tries again for up to 5 s, since a request made while the window is
 # still starting up is ignored.
-bring_to_front() {  # bring_to_front <pid of `script`>
+scrcpy_pid() {    # scrcpy_pid <pid>: the scrcpy process started under it (a few levels down)
+  local level p procs=($1) kids
+  for level in 1 2 3 4; do
+    kids=()
+    for p in $procs; do kids+=($(pgrep -P $p)); done
+    for p in $kids; do
+      [[ "$(ps -o comm= -p $p)" == */"PhoneConnect Mirror.app/Contents/MacOS/scrcpy" ]] && { print $p; return 0; }
+    done
+    procs=($kids)
+  done
+  return 1
+}
+
+bring_to_front() {  # bring_to_front <pid of the background job running scrcpy>
   local spid i front
-  spid=$(pgrep -P "$1" | head -1)       # scrcpy runs as a child of `script`
-  [[ -z "$spid" ]] && return
+  spid=$(scrcpy_pid "$1")
+  if [[ -z "$spid" ]]; then
+    echo "Couldn't find the scrcpy process under pid $1"
+    return 1
+  fi
   for i in {1..20}; do
     osascript -l JavaScript -e "ObjC.import('AppKit');
       var app = \$.NSRunningApplication.runningApplicationWithProcessIdentifier($spid);

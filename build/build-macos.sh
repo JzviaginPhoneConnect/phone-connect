@@ -89,6 +89,7 @@ for arch in aarch64 x86_64; do
   mirror="$tools/PhoneConnect Mirror.app/Contents"
   mkdir -p "$mirror/MacOS" "$mirror/Resources"
   cp "$src/scrcpy" "$mirror/MacOS/scrcpy"
+  cp "$ROOT/assets/PhoneConnect.png" "$mirror/MacOS/scrcpy.png"   # window icon; scrcpy looks next to itself
   cp "$ROOT/assets/PhoneConnect.icns" "$mirror/Resources/PhoneConnect.icns"
   cat > "$mirror/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
