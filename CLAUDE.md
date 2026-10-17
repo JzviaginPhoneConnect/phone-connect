@@ -22,8 +22,13 @@ end user installs nothing and never opens a terminal.
   `env.sh` (paths, tools, files, `OS_INFO`), `unquarantine`, `ask_question`,
   `choose_item`, `show_alert`, `run_with_timeout`, `port_open`, `run_scrcpy`,
   `picture_up`, `stop_scrcpy`, `bring_to_front`, `status_window`.
-- Status window: the script's `status "text"` appends a plain-language step to
-  `$TMPDIR/PhoneConnect.<pid>.status` (and logs `Status: text`); `status --done` writes
+- Script structure: helpers first, then one function per step, `main` at the bottom
+  runs them in order, each through `step` (logs `Step start: X` / `Step end: X (N ms,
+  exit R)`; steps can nest). Steps hand results over in the global variables listed at
+  the top (never via their output, which `step` writes to), return 0 done / 1 failed
+  (user told) / 2 cancelled, and only `main` exits. Functions are camelCase.
+- Status window: the script's `showStatus "text"` appends a plain-language step to
+  `$TMPDIR/PhoneConnect.<pid>.status` (and logs `Status: text`); `showStatus --done` writes
   `__done__`. The window (Mac: `macos/StatusWindow.swift` → `Contents/Resources/PhoneConnect
   Status.app`, built with swiftc for arm64+x86_64; Windows: `PhoneConnect.exe --status`)
   polls the file every 0.25 s and closes on `__done__` or when `<file>.alive` (refreshed
@@ -46,9 +51,9 @@ end user installs nothing and never opens a terminal.
   Paths for Windows programs (scrcpy reads `ADB`, `SCRCPY_SERVER_PATH`) via `cygpath -m`;
   MSYS process ids → Windows ids via `ps -l` (`scrcpy_winpid`).
 - USB phones = `adb devices` serials that aren't `ip:port` or `_adb-tls-connect`
-  (`usb_serials`). Don't use the `usb:` field of `adb devices -l`: Windows adb doesn't print it.
-- Windows programs (adb.exe…) end lines with CR LF: `logged` strips `\r` from every
-  captured output, so compare only output that went through `adb`/`logged`.
+  (`usbSerials`). Don't use the `usb:` field of `adb devices -l`: Windows adb doesn't print it.
+- Windows programs (adb.exe…) end lines with CR LF: `runLogged` strips `\r` from every
+  captured output, so compare only output that went through `adb`/`runLogged`.
 - `.gitattributes` keeps `*.sh` LF (zsh breaks on CRLF; the Windows runner checks out CRLF).
 - Tests: `tests/run-tests.sh <platform dir>` (logic, fakes in `tests/fakes`, runs on both
   OSes in CI), `tests/windows-smoke.sh` (real Windows platform scripts, CI only).
@@ -148,7 +153,7 @@ This is `picture_up.sh`:
 Log (`LOG_FILE`: Mac `/tmp/PhoneConnect.log`, Windows `%TEMP%\PhoneConnect.log`; the same
 code on both), one file for everything, each line
 `date time.ms [pid source]`: `app` = the script's messages and dialog answers, `cmd` =
-every adb/tool/platform command (via `logged`, `with_timeout`, `platform`) with exit code, output (`|`) and
+every adb/tool/platform command (via `runLogged`, `withTimeout`, `platform`) with exit code, output (`|`) and
 errors (`!`), `scrcpy` = scrcpy's own output (run with `-V debug`). Appended across runs;
 lines older than 24 h are dropped at start.
 
