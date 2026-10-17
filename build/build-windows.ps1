@@ -166,6 +166,20 @@ foreach ($f in Get-ChildItem (Join-Path $Root 'platform/windows') -Filter '*.sh'
 }
 Copy-Item (Join-Path $Root 'assets/PhoneConnect.ico') $Stage
 Copy-Item (Join-Path $Root 'THIRD_PARTY_NOTICES.md') $Stage
+
+# ---- license texts: ours, the bundled software's, and adb's notice (from the
+# Platform-Tools release the bundled adb comes from) ----
+$licenses = Join-Path $Stage 'licenses'
+New-Item -ItemType Directory -Force -Path $licenses | Out-Null
+Copy-Item (Join-Path $Root 'licenses/*') $licenses
+Copy-Item (Join-Path $Root 'LICENSE') (Join-Path $licenses 'PhoneConnect-MIT.txt')
+$ptUrl, $ptSum = $cfg['PLATFORM_TOOLS_WINDOWS'] -split '\s+'
+$ptZip = Get-Verified $ptUrl.Substring($ptUrl.LastIndexOf('/') + 1) $ptSum $ptUrl.Substring(0, $ptUrl.LastIndexOf('/'))
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [IO.Compression.ZipFile]::OpenRead($ptZip)
+try {
+  [IO.Compression.ZipFileExtensions]::ExtractToFile($zip.GetEntry('platform-tools/NOTICE.txt'), (Join-Path $licenses 'adb-NOTICE.txt'), $true)
+} finally { $zip.Dispose() }
 @"
 PhoneConnect $Version
 Mirror and control your Android phone from this PC (powered by scrcpy $ScrcpyVersion).
@@ -203,7 +217,7 @@ if ($Dev) {
     Stop-Process -Force -ErrorAction SilentlyContinue
   if (Test-Path $DevApp) { Remove-Item -Recurse -Force $DevApp }
   New-Item -ItemType Directory -Force -Path $DevApp | Out-Null
-  foreach ($f in @('PhoneConnect.exe', 'PhoneConnect.sh', 'PhoneConnect.ico', 'README.txt', 'THIRD_PARTY_NOTICES.md', 'platform', 'shell')) {
+  foreach ($f in @('PhoneConnect.exe', 'PhoneConnect.sh', 'PhoneConnect.ico', 'README.txt', 'THIRD_PARTY_NOTICES.md', 'licenses', 'platform', 'shell')) {
     Copy-Item (Join-Path $Stage $f) $DevApp -Recurse
   }
   Copy-Item (Join-Path $Stage "tools-$thisArch") (Join-Path $DevApp 'tools') -Recurse
@@ -218,7 +232,7 @@ if ($Dev) {
 foreach ($arch in @('x64', 'arm64')) {
   $folder = Join-Path $Work "PhoneConnect-$arch/PhoneConnect"
   New-Item -ItemType Directory -Force -Path $folder | Out-Null
-  foreach ($f in @('PhoneConnect.exe', 'PhoneConnect.sh', 'PhoneConnect.ico', 'README.txt', 'THIRD_PARTY_NOTICES.md', 'platform', 'shell')) {
+  foreach ($f in @('PhoneConnect.exe', 'PhoneConnect.sh', 'PhoneConnect.ico', 'README.txt', 'THIRD_PARTY_NOTICES.md', 'licenses', 'platform', 'shell')) {
     Copy-Item (Join-Path $Stage $f) $folder -Recurse
   }
   Copy-Item (Join-Path $Stage "tools-$arch") (Join-Path $folder 'tools') -Recurse

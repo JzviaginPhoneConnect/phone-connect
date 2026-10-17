@@ -169,6 +169,22 @@ The pid to activate is scrcpy's own, found by walking down from `$!` (`scrcpy_pi
 Don't use System Events `set frontmost`: it needs an Automation permission prompt.
 Dialogs start with `activate` so they come to the front.
 
+## Licensing (keep complete when anything bundled changes)
+
+- `licenses/` (GPL-3.0, LGPL-2.1/3.0, Apache-2.0, PCRE/PCRE2 BSD, SDL zlib, index README)
+  ships in both apps, plus `PhoneConnect-MIT.txt` (= LICENSE) and `adb-NOTICE.txt`
+  (Platform-Tools NOTICE.txt, pinned `PLATFORM_TOOLS_*` in versions.env).
+- GPL/LGPL source: `build/collect-sources.sh` fetches the pinned `SOURCE_*` archives
+  (scrcpy + FFmpeg/SDL/libusb at the versions in scrcpy's `app/deps/`, and every MSYS2
+  package's source package); the release job publishes them once as the GitHub release
+  `THIRD_PARTY_SOURCES_TAG` (not "latest"). THIRD_PARTY_NOTICES.md and README link to it;
+  the release fails if the notices don't link to the current tag.
+- **When scrcpy or any MSYS2 package changes:** update its `SOURCE_*` line (url, sha256),
+  bump `THIRD_PARTY_SOURCES_TAG`, update the link in THIRD_PARTY_NOTICES.md and README,
+  and the versions in THIRD_PARTY_NOTICES.md.
+- On macOS, FFmpeg/SDL/libusb are statically linked into scrcpy (LGPL: complete source
+  incl. scrcpy's build scripts is in the sources release, so relinking is possible).
+
 ## Gotchas already hit
 
 - zsh's `BG_NICE` (on by default) runs every `&` job at nice 5. scrcpy is started with `&`

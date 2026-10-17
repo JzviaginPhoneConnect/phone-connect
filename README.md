@@ -2,9 +2,20 @@
 
 # PhoneConnect
 
+**scrcpy in one click, for Mac and Windows.** No terminal, nothing else to install.
+
+[![Donate with PayPal](https://img.shields.io/badge/Donate-PayPal-0070ba?logo=paypal&logoColor=white)](https://paypal.me/jzviagin)
+
 Use your Android phone from your Mac or Windows PC: see its screen in a window, control it with your mouse and keyboard, dial calls without picking it up, and hear its sound on the computer. It also mirrors **Samsung DeX** as a desktop in a window.
 
-PhoneConnect is a one-click wrapper around [scrcpy](https://github.com/Genymobile/scrcpy). Everything it needs ships inside the app, so you don't need to install anything else or use a terminal.
+PhoneConnect is a ready-to-use app around [scrcpy](https://github.com/Genymobile/scrcpy), the open-source Android screen mirroring tool. scrcpy is great but runs from the command line; PhoneConnect gives you an app you just open:
+
+- **Everything included:** scrcpy and adb ship inside the app. No Homebrew, no Android SDK, no PATH setup.
+- **Finds your phone by itself:** USB first, then Ethernet (a USB-C dock), then Wi-Fi, and it remembers the phone, so after one cable connection it works wirelessly.
+- **Several phones:** asks which one to connect to, and keeps track of each phone's addresses.
+- **Samsung DeX:** mirrors the DeX desktop in a window, even with no monitor attached (with an HDMI dummy plug).
+- **Real keyboard:** typing uses the phone's own keyboard layouts, so other languages work.
+- **Shows what it's doing** in a small window while it connects, and retries by itself if the picture doesn't come up.
 
 ## Download
 
@@ -157,6 +168,12 @@ On a free GitHub account, rulesets work on public repositories. A private reposi
 
 **Updating scrcpy.** Change the version and the four checksums in `build/versions.env`. The checksums are listed in `SHA256SUMS.txt` on the scrcpy release page.
 
+## Support
+
+PhoneConnect is free. If it's useful to you, you can support its development with a donation via [PayPal](https://paypal.me/jzviagin). Thank you!
+
 ## License
 
-PhoneConnect's own files are under the [MIT License](LICENSE). The bundled scrcpy and adb keep their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+PhoneConnect's own files are under the [MIT License](LICENSE). The bundled software (scrcpy, adb, and on Windows the shell the app runs on) keeps its own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The full license texts ship with the app in its `licenses` folder, and the exact source code of all bundled software is published in the [third-party sources release](../../releases/tag/third-party-sources-1).
+
+PhoneConnect is an independent project, not affiliated with or endorsed by Genymobile (scrcpy), Google or Samsung.
