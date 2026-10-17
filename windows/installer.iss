@@ -52,6 +52,8 @@ Source: "{#Stage}\platform\*";      DestDir: "{app}\platform"; Flags: ignorevers
 Source: "{#Stage}\shell\*";         DestDir: "{app}\shell";    Flags: ignoreversion recursesubdirs
 Source: "{#Stage}\PhoneConnect.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\README.txt";       DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\licenses\*";      DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs
 Source: "{#Stage}\tools-x64\*";   DestDir: "{app}\tools"; Check: not IsArm64; Flags: ignoreversion recursesubdirs
 Source: "{#Stage}\tools-arm64\*"; DestDir: "{app}\tools"; Check: IsArm64;     Flags: ignoreversion recursesubdirs
 
@@ -60,6 +62,7 @@ Source: "{#Stage}\tools-arm64\*"; DestDir: "{app}\tools"; Check: IsArm64;     Fl
 Type: filesandordirs; Name: "{app}\tools"
 Type: filesandordirs; Name: "{app}\platform"
 Type: filesandordirs; Name: "{app}\shell"
+Type: filesandordirs; Name: "{app}\licenses"
 Type: files; Name: "{app}\PhoneConnect.ps1"
 Type: files; Name: "{app}\.unblocked-*"
 

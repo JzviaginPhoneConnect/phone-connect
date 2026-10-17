@@ -50,12 +50,14 @@ fi
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 
 # download NAME EXPECTED_SHA256 -> path of the verified file (cached in downloads/)
+# (optional third argument: the folder URL, if not the scrcpy release)
 download() {
   local name=$1 want=$2 file="$DL/$1"
+  local base=${3:-https://github.com/Genymobile/scrcpy/releases/download/v$SCRCPY_VERSION}
   mkdir -p "$DL"
   if [[ ! -f "$file" || "$(sha256 "$file")" != "$want" ]]; then
     echo "Downloading $name" >&2
-    curl -fsSL -o "$file" "https://github.com/Genymobile/scrcpy/releases/download/v$SCRCPY_VERSION/$name"
+    curl -fsSL -o "$file" "$base/$name"
   fi
   local got; got="$(sha256 "$file")"
   if [[ "$got" != "$want" ]]; then
@@ -156,6 +158,16 @@ else
   echo "Note: no Swift compiler (Xcode command line tools), so no status window in this build" >&2
 fi
 cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/"
+
+# ---- license texts: ours, the bundled software's, and adb's notice (from the
+# Platform-Tools release the bundled adb comes from) ----
+licenses="$APP/Contents/Resources/licenses"
+mkdir -p "$licenses"
+cp "$ROOT"/licenses/* "$licenses/"
+cp "$ROOT/LICENSE" "$licenses/PhoneConnect-MIT.txt"
+read -r pt_url pt_sum <<< "$PLATFORM_TOOLS_MACOS"
+pt_zip="$(download "$(basename "$pt_url")" "$pt_sum" "$(dirname "$pt_url")")"
+unzip -p "$pt_zip" platform-tools/NOTICE.txt > "$licenses/adb-NOTICE.txt"
 
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
