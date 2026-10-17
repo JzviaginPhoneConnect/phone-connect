@@ -106,11 +106,14 @@ foreach ($s in $sets) {
   $src = Get-ChildItem $tmp -Directory | Select-Object -First 1
   $dest = Join-Path $Stage ("tools-" + $s.Arch)
   New-Item -ItemType Directory -Force -Path $dest | Out-Null
-  # everything except scrcpy's own helper shortcuts and images
+  # everything except scrcpy's own helper shortcuts and its icon (replaced below);
+  # disconnected.png is kept: scrcpy shows it in the window if the phone drops off
   Get-ChildItem $src.FullName -File |
-    Where-Object { $_.Extension -notin @('.bat', '.vbs', '.png') } |
+    Where-Object { $_.Extension -notin @('.bat', '.vbs') -and ($_.Extension -ne '.png' -or $_.Name -eq 'disconnected.png') } |
     Copy-Item -Destination $dest
   Rename-Item (Join-Path $dest 'LICENSE.txt') 'scrcpy-LICENSE.txt'
+  # scrcpy's window icon: it uses scrcpy.png next to scrcpy.exe, else its own Android icon
+  Copy-Item (Join-Path $Root 'assets/PhoneConnect.png') (Join-Path $dest 'scrcpy.png')
   Remove-Item -Recurse -Force $tmp
 }
 

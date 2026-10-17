@@ -7,6 +7,12 @@
 # Asks whether to use DeX (if a DeX display exists) and whether to forward audio.
 # Connects over USB, Ethernet (dock) or Wi-Fi, in that order of preference.
 # Any extra arguments are passed straight to scrcpy, e.g.:  PhoneConnect --print-fps
+#
+# Layout: settings and helpers first, then one function per step, and main at the
+# bottom, which runs the steps in order. Every step goes through `step`, which logs
+# when it starts and how long it took. Steps hand their results over in the global
+# variables below (never through their output) and return 0 (done), 1 (failed, the
+# user has been told) or 2 (the user cancelled); only main exits.
 
 # The build replaces @VERSION@ with the release version (e.g. 1.2.3).
 export APP_VERSION="@VERSION@"
@@ -19,19 +25,44 @@ setopt NO_BG_NICE
 # Paths, tools and files for this OS: TOOLS_DIR ADB SCRCPY SCRCPY_SERVER_PATH
 # PHONES_FILE OLD_IPS_FILE LOG_FILE TMPDIR OS_INFO. Everything ships with the app,
 # so nothing has to be installed. ${0:A:h} is this script's real folder.
-PLATFORM="${0:A:h}/platform"
+SCRIPT="${0:A}"
+PLATFORM="${SCRIPT:h}/platform"
 source "$PLATFORM/env.sh"
 
-# ---- Log ----
+zmodload zsh/datetime            # $EPOCHREALTIME, strftime
+zmodload zsh/system              # $sysparams[pid]: this (sub)shell's own process id
+zmodload zsh/zselect             # zselect -t N: wait N/100 s without starting a program
+zmodload -F zsh/files b:zf_rm    # zf_rm: rm built into zsh
+
+PORT=5555                        # adb's network port on the phone
+
+# ---- Results the steps hand to each other ----
+typeset -a P_ID P_NAME P_ETH P_WIFI   # saved phones (see "Saved phones")
+typeset -A USB_OF                     # phone id -> USB serial, for phones plugged in now
+typeset -a USB_SERIALS                # serials of the phones on USB
+MIGRATE=0                             # 1: first run after an older version (old IPs file)
+CHOSEN_ID=""                          # the phone to connect to
+SERIAL=""                             # adb serial of the connection (USB serial or ip:port)
+LINK=""                               # USB, Ethernet, Wi-Fi or Wireless debugging
+PHONE_NAME=""                         # the chosen phone's name, for messages and the title
+LEARNED_ID="" LEARNED_NAME="" LEARNED_ETH=""   # set by learnPhone
+DEX_ID=""                             # id of the DeX display, if there is one
+TARGET="phone"                        # phone or dex
+AUDIO=() AUDIO_CHOICE=""              # scrcpy's audio option, and the answer given
+SCRCPY_JOB=""                         # background job running scrcpy
+STATUS_WATCHER=""                     # background loop for the status window
+
+# =====================================================================
+# Log
 # One log with timestamps for everything: this script's messages [app], every adb
 # (and other tool) command with its exit code and output [cmd], and scrcpy's own
 # output [scrcpy]. Each line also has this run's process id, in case two run at
 # once. It's kept across runs; lines older than a day are dropped at start.
-zmodload zsh/datetime
+# =====================================================================
 LOG=$LOG_FILE
 [[ -t 1 ]] && ON_TERMINAL=1 || ON_TERMINAL=0
 
-stamp() {         # stamp <source>: timestamp each line read and add it to the log
+stampLines() {    # stampLines <source>: timestamp each line read and add it to the log
   local line t ts
   while IFS= read -r line || [[ -n "$line" ]]; do
     t=$EPOCHREALTIME
@@ -43,21 +74,36 @@ stamp() {         # stamp <source>: timestamp each line read and add it to the l
   done
 }
 
-if [[ -f "$LOG" ]]; then
-  strftime -s LOG_CUTOFF '%Y-%m-%d %H:%M:%S' $(( EPOCHSECONDS - 86400 ))
-  awk -v c="$LOG_CUTOFF" '/^[0-9][0-9][0-9][0-9]-/ && substr($0, 1, 19) >= c' "$LOG" > "$LOG.$$" \
-    && mv -f "$LOG.$$" "$LOG"
-fi
-exec > >(stamp app) 2>&1
-exec 3> >(stamp cmd)
+startLog() {
+  if [[ -f "$LOG" ]]; then
+    local cutoff
+    strftime -s cutoff '%Y-%m-%d %H:%M:%S' $(( EPOCHSECONDS - 86400 ))
+    awk -v c="$cutoff" '/^[0-9][0-9][0-9][0-9]-/ && substr($0, 1, 19) >= c' "$LOG" > "$LOG.$$" \
+      && mv -f "$LOG.$$" "$LOG"
+  fi
+  exec > >(stampLines app) 2>&1
+  exec 3> >(stampLines cmd)
+}
 
-# logged <command...>: run it and pass its output on, writing the command, its
+# step <function> <args...>: run one step of the program, logging when it starts and
+# how long it took. Steps can contain steps; each is timed on its own.
+step() {
+  local name=$1 start=$EPOCHREALTIME rc
+  local -i ms
+  shift
+  echo "Step start: $name"
+  "$name" "$@"
+  rc=$?
+  (( ms = (EPOCHREALTIME - start) * 1000 ))
+  echo "Step end: $name ($ms ms, exit $rc)"
+  return $rc
+}
+
+# runLogged <command...>: run it and pass its output on, writing the command, its
 # exit code and its output to the log. LOGGED_LABEL= names the command in the log.
 # It runs no helper programs of its own (starting a program is slow on Windows):
 # the temp file name, removing it and the "  | " prefixes are all done by zsh.
-zmodload zsh/system              # $sysparams[pid]: this (sub)shell's own process id
-zmodload -F zsh/files b:zf_rm    # zf_rm: rm built into zsh
-logged() {
+runLogged() {
   local out err rc errf="$TMPDIR/PhoneConnect.${sysparams[pid]}.$RANDOM.err"
   local -a lines
   out=$("$@" 2>"$errf"); rc=$?
@@ -73,27 +119,34 @@ logged() {
   return $rc
 }
 
-adb() { LOGGED_LABEL="adb $*" logged "$ADB" "$@"; }
+adb() { LOGGED_LABEL="adb $*" runLogged "$ADB" "$@"; }
 
 # platform <name> <args...>: run platform/<name>.sh, logged like any other command
 platform() {
   local name=$1; shift
-  LOGGED_LABEL="platform/$name $*" logged zsh -f "$PLATFORM/$name.sh" "$@"
+  LOGGED_LABEL="platform/$name $*" runLogged zsh -f "$PLATFORM/$name.sh" "$@"
 }
 
-echo "PhoneConnect $APP_VERSION starting — $OS_INFO, app: ${0:A}"
+# withTimeout <seconds> <command...>: run a command but give up after that long
+withTimeout() {
+  local secs=$1; shift
+  LOGGED_LABEL="$* (time limit ${secs}s)" runLogged zsh -f "$PLATFORM/run_with_timeout.sh" "$secs" "$@"
+}
 
-# ---- Status window ----
+# =====================================================================
+# Status window and dialogs
 # A small PhoneConnect window shows the user what's happening, in plain words, until
-# the picture appears. status "text" adds a line (also logged as "Status: text");
-# status --done closes the window. The window only reads and writes files, never
+# the picture appears. showStatus "text" adds a line (also logged as "Status: text");
+# showStatus --done closes the window. The window only reads and writes files, never
 # touches processes (antivirus scanners distrust small programs that kill others):
 #   STATUS_FILE         the lines to show; "__done__" closes it
 #   STATUS_FILE.alive   refreshed every 0.5 s while this script runs; when it goes
 #                       stale (script gone, however it ended) the window closes
 #   STATUS_FILE.cancel  created by the window's Cancel button; this script then stops
+# =====================================================================
 STATUS_FILE="$TMPDIR/PhoneConnect.$$.status"
-status() {
+
+showStatus() {
   if [[ "$1" == --done ]]; then
     print -r -- "__done__" >> "$STATUS_FILE"
   else
@@ -101,122 +154,73 @@ status() {
     echo "Status: $1"
   fi
 }
-SCRCPY_JOB=""
-STATUS_WATCHER=""
-on_exit() {
-  status --done
-  [[ -n "$STATUS_WATCHER" ]] && kill $STATUS_WATCHER 2>/dev/null
-  # stopped (e.g. Cancel) while still waiting for the picture: don't leave scrcpy behind
-  [[ -n "$SCRCPY_JOB" ]] && kill -0 $SCRCPY_JOB 2>/dev/null && platform stop_scrcpy $SCRCPY_JOB
-  zf_rm -f "$STATUS_FILE.alive" "$STATUS_FILE.cancel"
-  # give the window a moment to read "__done__" before the file goes
-  zselect -t 50
-  zf_rm -f "$STATUS_FILE"
-}
-trap on_exit EXIT
-trap 'exit 143' TERM INT HUP
-zmodload zsh/zselect             # zselect -t N: wait N/100 s without starting a program
-: > "$STATUS_FILE"
-: > "$STATUS_FILE.alive"
-# Keeps STATUS_FILE.alive fresh, and stops this script when Cancel was pressed
-{
-  while true; do
-    if [[ -e "$STATUS_FILE.cancel" ]]; then
-      echo "Cancel pressed in the status window — stopping"
-      kill -TERM $$
-      break
-    fi
-    : > "$STATUS_FILE.alive"
-    zselect -t 50
-  done
-} &!
-STATUS_WATCHER=$!
-status "Starting…"
-platform status_window "$STATUS_FILE" >/dev/null
 
-platform unquarantine
-
-# ask "Question" "Button A" "Button B" -> prints the chosen button (empty on Cancel)
-ask() {
+# askQuestion "Question" "Button A" "Button B" -> prints the chosen button (empty on Cancel)
+askQuestion() {
   local answer
   answer=$(platform ask_question "$@")
   echo "Asked: ${1//$'\n'/ } -> ${answer:-Cancel}" >&2
   print -r -- "$answer"
 }
 
-# choose "Question" "Default item" "Item 1" "Item 2"... -> prints the chosen item (empty on Cancel)
-choose() {
+# chooseItem "Question" "Default item" "Item 1" "Item 2"... -> prints the chosen item (empty on Cancel)
+chooseItem() {
   local answer
   answer=$(platform choose_item "$@")
   echo "Asked: $1 (${(j:, :)@[3,-1]}) -> ${answer:-Cancel}" >&2
   print -r -- "$answer"
 }
 
-# alert "Title" "Message": a warning the user has to click away
-alert() { platform show_alert "$@" >/dev/null; }
+# showAlert "Title" "Message": a warning the user has to click away
+showAlert() { platform show_alert "$@" >/dev/null; }
 
-for tool in "$ADB" "$SCRCPY"; do
-  if [[ ! -x "$tool" ]]; then
-    echo "$tool not found" >&2
-    alert "${tool:t} missing" "PhoneConnect is incomplete. Please reinstall it."
-    exit 1
-  fi
-done
-echo "Tools: $("$ADB" version 2>&1 | head -1), $("$SCRCPY" --version 2>&1 | head -1)"
-
-# Start adb's background server on its own, without capturing its output: started
-# by a later captured command, it would inherit that output pipe and hold it open.
-"$ADB" start-server >/dev/null 2>&1
-echo "adb server started"
-
-# ---- Saved phones ----
-# One entry per phone, told apart by its serial number (not the model, since two
-# phones can be the same model), with its last known Ethernet and Wi-Fi IPs.
-# Most recently used first. The empty id is a phone saved by an older version
-# whose serial isn't known yet; it gets its real id on the first connection.
-# (PHONES_FILE and OLD_IPS_FILE, the older single-phone file, come from env.sh)
-typeset -a P_ID P_NAME P_ETH P_WIFI
-
-load_phones() {
-  local n i
-  P_ID=() P_NAME=() P_ETH=() P_WIFI=()
-  [[ -s "$PHONES_FILE" ]] || return
-  n=$(xmllint --xpath 'count(/phones/phone)' "$PHONES_FILE" 2>/dev/null)
-  for (( i = 1; i <= ${n:-0}; i++ )); do
-    P_ID+=("$(xmllint --xpath "string(/phones/phone[$i]/@id)" "$PHONES_FILE" 2>/dev/null)")
-    P_NAME+=("$(xmllint --xpath "string(/phones/phone[$i]/@name)" "$PHONES_FILE" 2>/dev/null)")
-    P_ETH+=("$(xmllint --xpath "string(/phones/phone[$i]/@eth)" "$PHONES_FILE" 2>/dev/null)")
-    P_WIFI+=("$(xmllint --xpath "string(/phones/phone[$i]/@wifi)" "$PHONES_FILE" 2>/dev/null)")
-  done
+# When this script ends, however it ends: close the window, stop the watcher, and
+# don't leave a still-starting scrcpy behind (e.g. after Cancel)
+onExit() {
+  showStatus --done
+  [[ -n "$STATUS_WATCHER" ]] && kill $STATUS_WATCHER 2>/dev/null
+  [[ -n "$SCRCPY_JOB" ]] && kill -0 $SCRCPY_JOB 2>/dev/null && platform stop_scrcpy $SCRCPY_JOB
+  zf_rm -f "$STATUS_FILE.alive" "$STATUS_FILE.cancel"
+  # give the window a moment to read "__done__" before the file goes
+  zselect -t 50
+  zf_rm -f "$STATUS_FILE"
 }
 
-xml_escape() {
+# =====================================================================
+# Saved phones
+# One entry per phone, told apart by its serial number (not the model, since two
+# phones can be the same model), with its last known Ethernet and Wi-Fi IPs, in
+# PHONES_FILE (XML). Most recently used first. The empty id is a phone saved by an
+# older version whose serial isn't known yet; it gets its real id on the first
+# connection. OLD_IPS_FILE is the older single-phone file.
+# =====================================================================
+xmlEscape() {
   local s=$1
   s=${s//&/&amp;}; s=${s//</&lt;}; s=${s//>/&gt;}; s=${s//\"/&quot;}; s=${s//\'/&apos;}
   print -r -- "$s"
 }
 
-remove_phone() {  # remove_phone <index>
+removePhone() {   # removePhone <index>
   P_ID[$1]=() P_NAME[$1]=() P_ETH[$1]=() P_WIFI[$1]=()
 }
 
-write_phones() {
+writeSavedDevices() {
   local i tmp="$PHONES_FILE.tmp"
   # An old-version phone with no IPs left has nothing to remember
   for (( i = ${#P_ID}; i >= 1; i-- )); do
-    [[ -z "${P_ID[i]}${P_ETH[i]}${P_WIFI[i]}" ]] && remove_phone $i
+    [[ -z "${P_ID[i]}${P_ETH[i]}${P_WIFI[i]}" ]] && removePhone $i
   done
   {
     print -r -- '<?xml version="1.0" encoding="UTF-8"?>'
     print -r -- '<phones>'
     for (( i = 1; i <= ${#P_ID}; i++ )); do
-      print -r -- "  <phone id=\"$(xml_escape "${P_ID[i]}")\" name=\"$(xml_escape "${P_NAME[i]}")\" eth=\"$(xml_escape "${P_ETH[i]}")\" wifi=\"$(xml_escape "${P_WIFI[i]}")\"/>"
+      print -r -- "  <phone id=\"$(xmlEscape "${P_ID[i]}")\" name=\"$(xmlEscape "${P_NAME[i]}")\" eth=\"$(xmlEscape "${P_ETH[i]}")\" wifi=\"$(xmlEscape "${P_WIFI[i]}")\"/>"
     done
     print -r -- '</phones>'
   } > "$tmp" && mv -f "$tmp" "$PHONES_FILE"
 }
 
-phone_index() {   # phone_index <id> -> prints its index, fails if not saved
+phoneIndex() {    # phoneIndex <id> -> prints its index, fails if not saved
   local i
   for (( i = 1; i <= ${#P_ID}; i++ )); do
     [[ "${P_ID[i]}" == "$1" ]] && { print $i; return 0; }
@@ -224,18 +228,18 @@ phone_index() {   # phone_index <id> -> prints its index, fails if not saved
   return 1
 }
 
-phone_saved_name() {  # phone_saved_name <id>
+savedName() {     # savedName <id>
   local idx
-  idx=$(phone_index "$1") && print -r -- "${P_NAME[idx]}"
+  idx=$(phoneIndex "$1") && print -r -- "${P_NAME[idx]}"
 }
 
-# save_phone <id> <name> <eth ip> <wifi ip>
+# savePhone <id> <name> <eth ip> <wifi ip>
 # Adds the phone (at the end) or updates it (an empty value keeps the saved one,
 # e.g. no Ethernet IP while undocked), and takes its IPs off any other phone
 # (the network gave them to this one).
-save_phone() {
+savePhone() {
   local id=$1 name=$2 eth=$3 wifi=$4 idx i
-  idx=$(phone_index "$id")
+  idx=$(phoneIndex "$id")
   if [[ -z "$idx" ]]; then
     P_ID+=("$id") P_NAME+=("") P_ETH+=("") P_WIFI+=("")
     idx=${#P_ID}
@@ -248,67 +252,59 @@ save_phone() {
   [[ -n "$name" ]] && P_NAME[idx]=$name
   [[ -n "$eth"  ]] && P_ETH[idx]=$eth
   [[ -n "$wifi" ]] && P_WIFI[idx]=$wifi
-  write_phones
+  writeSavedDevices
 }
 
-mark_used() {     # mark_used <id>: move the phone to the top (the default next time)
+markUsed() {      # markUsed <id>: move the phone to the top (the default next time)
   local idx id name eth wifi
-  idx=$(phone_index "$1") || return
+  idx=$(phoneIndex "$1") || return
   id=${P_ID[idx]} name=${P_NAME[idx]} eth=${P_ETH[idx]} wifi=${P_WIFI[idx]}
-  remove_phone $idx
+  removePhone $idx
   P_ID=("$id" "${P_ID[@]}") P_NAME=("$name" "${P_NAME[@]}") P_ETH=("$eth" "${P_ETH[@]}") P_WIFI=("$wifi" "${P_WIFI[@]}")
-  write_phones
+  writeSavedDevices
 }
 
-forget_ip() {     # forget_ip <id> <ip>
+forgetIp() {      # forgetIp <id> <ip>
   local idx
-  idx=$(phone_index "$1") || return
+  idx=$(phoneIndex "$1") || return
   [[ "${P_ETH[idx]}"  == "$2" ]] && P_ETH[idx]=""
   [[ "${P_WIFI[idx]}" == "$2" ]] && P_WIFI[idx]=""
-  write_phones
+  writeSavedDevices
 }
 
-# ---- Talking to a phone ----
-PORT=5555
-SERIAL=""
-LINK=""
-
-# Run a command but give up after N seconds
-with_timeout() {  # with_timeout SECONDS command...
-  local secs=$1; shift
-  LOGGED_LABEL="$* (time limit ${secs}s)" logged zsh -f "$PLATFORM/run_with_timeout.sh" "$secs" "$@"
-}
-
-phone_prop() {    # phone_prop <serial> <command...> -> one trimmed line ("null"/"unknown" = empty)
+# =====================================================================
+# Talking to a phone
+# =====================================================================
+phoneProp() {     # phoneProp <serial> <command...> -> one trimmed line ("null"/"unknown" = empty)
   local s=$1 v; shift
-  v=$(with_timeout 8 adb -s "$s" shell "$@" 2>/dev/null | tr -d '\r' | head -1)
+  v=$(withTimeout 8 adb -s "$s" shell "$@" 2>/dev/null | tr -d '\r' | head -1)
   v=${v//$'\t'/ }
   [[ "$v" == (null|unknown) ]] && v=""
   print -r -- "$v"
 }
 
-phone_id() {      # phone_id <serial> -> the phone's own serial number (same over USB and network)
+phoneId() {       # phoneId <serial> -> the phone's own serial number (same over USB and network)
   local id
-  id=$(phone_prop "$1" getprop ro.serialno)
-  [[ -z "$id" ]] && id=$(phone_prop "$1" getprop ro.boot.serialno)
-  [[ -z "$id" ]] && id=$(phone_prop "$1" settings get secure android_id)
+  id=$(phoneProp "$1" getprop ro.serialno)
+  [[ -z "$id" ]] && id=$(phoneProp "$1" getprop ro.boot.serialno)
+  [[ -z "$id" ]] && id=$(phoneProp "$1" settings get secure android_id)
   print -r -- "$id"
 }
 
-phone_name() {    # phone_name <serial> -> the name set on the phone, else its model
+phoneName() {     # phoneName <serial> -> the name set on the phone, else its model
   local name
-  name=$(phone_prop "$1" settings get global device_name)
-  [[ -z "$name" ]] && name=$(phone_prop "$1" getprop ro.product.model)
+  name=$(phoneProp "$1" settings get global device_name)
+  [[ -z "$name" ]] && name=$(phoneProp "$1" getprop ro.product.model)
   print -r -- "${name:-Phone}"
 }
 
-iface_ip() {      # iface_ip <interface> <adb target args...>
+interfaceIp() {   # interfaceIp <interface> <adb target args...>
   local ifc=$1; shift
-  with_timeout 8 adb "$@" shell ip -f inet addr show $ifc 2>/dev/null \
+  withTimeout 8 adb "$@" shell ip -f inet addr show $ifc 2>/dev/null \
     | awk '/inet /{print $2}' | cut -d/ -f1 | head -1
 }
 
-usb_ready() {     # usb_ready <serial>: wait up to ~10s for the USB connection to be usable
+waitUsbReady() {  # waitUsbReady <serial>: wait up to ~10s for the USB connection to be usable
   local i
   for i in {1..10}; do
     [[ "$(adb -s "$1" get-state 2>/dev/null)" == "device" ]] && return 0
@@ -317,22 +313,22 @@ usb_ready() {     # usb_ready <serial>: wait up to ~10s for the USB connection t
   return 1
 }
 
-port_open() {     # quick check that something answers at IP:PORT (1-2 s, never hangs)
+portOpen() {      # portOpen <ip>: quick check that something answers at IP:PORT (1-2 s, never hangs)
   platform port_open "$1" "$PORT" >/dev/null 2>&1
 }
 
-try_connect() {   # try_connect IP  -> sets SERIAL on success
+connectTo() {     # connectTo <ip> -> sets SERIAL on success
   local i j state
   # Skip quickly if nothing answers there (e.g. the Ethernet IP while undocked);
   # otherwise `adb connect` can hang for over a minute.
-  if ! port_open "$1"; then
+  if ! portOpen "$1"; then
     echo "  $1 not reachable"
-    status "$1 isn't answering"
+    showStatus "$1 isn't answering"
     return 1
   fi
   for i in 1 2; do
     adb disconnect "${1}:${PORT}" >/dev/null 2>&1   # clear any stale/offline entry
-    with_timeout 8 adb connect "${1}:${PORT}" >/dev/null 2>&1
+    withTimeout 8 adb connect "${1}:${PORT}" >/dev/null 2>&1
     for j in 1 2 3; do                               # give it a moment to come online
       state=$(adb devices | awk -v d="${1}:${PORT}" '$1==d {print $2}')
       if [[ "$state" == "device" ]]; then
@@ -345,153 +341,60 @@ try_connect() {   # try_connect IP  -> sets SERIAL on success
   return 1
 }
 
-# learn_phone <serial> <id if unreadable> [<ip used> <eth|wifi>]
+# learnPhone <serial> <id if unreadable> [<ip used> <eth|wifi>]
 # Reads which phone is at SERIAL and its current IPs, and saves them.
 # Sets LEARNED_ID, LEARNED_NAME, LEARNED_ETH.
-learn_phone() {
+learnPhone() {
   local s=$1 ip=$3 kind=$4 eth wifi
-  LEARNED_ID=$(phone_id "$s")
+  LEARNED_ID=$(phoneId "$s")
   [[ -z "$LEARNED_ID" ]] && LEARNED_ID=$2
-  LEARNED_NAME=$(phone_name "$s")
-  eth=$(iface_ip eth0 -s "$s")
-  wifi=$(iface_ip wlan0 -s "$s")
+  LEARNED_NAME=$(phoneName "$s")
+  eth=$(interfaceIp eth0 -s "$s")
+  wifi=$(interfaceIp wlan0 -s "$s")
   # The IP we came in on, in case the phone didn't report it
   if [[ -n "$ip" && "$ip" != "$eth" && "$ip" != "$wifi" ]]; then
     if [[ $kind == eth ]]; then eth=${eth:-$ip}; else wifi=${wifi:-$ip}; fi
   fi
   LEARNED_ETH=$eth
-  save_phone "$LEARNED_ID" "$LEARNED_NAME" "$eth" "$wifi"
+  savePhone "$LEARNED_ID" "$LEARNED_NAME" "$eth" "$wifi"
 }
 
-# claim_connection <wanted id> <ip> <eth|wifi>  (SERIAL = a new network connection)
+# claimConnection <wanted id> <ip> <eth|wifi>  (SERIAL = a new network connection)
 # Succeeds if the wanted phone answered. If a different phone has this IP now,
 # the IP is moved to that phone (it's added if it's new) and the connection dropped.
-claim_connection() {
+claimConnection() {
   local want=$1 idx ph
-  learn_phone "$SERIAL" "$want" "$2" "$3"
+  learnPhone "$SERIAL" "$want" "$2" "$3"
   if [[ -z "$want" && -n "$LEARNED_ID" ]]; then
     # A phone saved by an older version: now we know which one it is
-    ph=$(phone_index "")
+    ph=$(phoneIndex "")
     if [[ -n "$ph" ]]; then
-      idx=$(phone_index "$LEARNED_ID")
+      idx=$(phoneIndex "$LEARNED_ID")
       [[ -z "${P_ETH[idx]}"  ]] && P_ETH[idx]=${P_ETH[ph]}
       [[ -z "${P_WIFI[idx]}" ]] && P_WIFI[idx]=${P_WIFI[ph]}
-      remove_phone $ph
-      write_phones
+      removePhone $ph
+      writeSavedDevices
     fi
     CHOSEN_ID=$LEARNED_ID
     return 0
   fi
   [[ "$LEARNED_ID" == "$want" ]] && return 0
   echo "  $2 is now another phone ($LEARNED_NAME) — moved the IP to it, disconnecting"
-  status "$2 is now $LEARNED_NAME — trying the next address"
-  forget_ip "$want" "$2"
+  showStatus "$2 is now $LEARNED_NAME — trying the next address"
+  forgetIp "$want" "$2"
   adb disconnect "$SERIAL" >/dev/null 2>&1
   SERIAL=""
   return 1
 }
 
-load_phones
-[[ ! -e "$PHONES_FILE" && -e "$OLD_IPS_FILE" ]] && MIGRATE=1 || MIGRATE=0
-
-# Drop wireless entries that are stuck "offline" (e.g. from an old IP)
-adb devices | awk 'NR>1 && $2=="offline" && $1 ~ /:[0-9]+$/ {print $1}' | while read -r d; do
-  adb disconnect "$d" >/dev/null 2>&1
-done
-
-# ---- Phones on USB ----
-# For each phone plugged in: save its Ethernet and Wi-Fi IPs and turn on network
-# mode, so later launches can connect without the cable (until the phone restarts).
-typeset -A USB_OF      # phone id -> USB serial
-
 # Phones on USB: every phone adb lists that isn't a network connection (IP:PORT)
 # or found through Wireless debugging. (`adb devices -l` shows a "usb:" field only
 # on macOS/Linux, so don't rely on it.)
-usb_serials() {
+usbSerials() {
   adb devices | awk 'NR > 1 && NF >= 2 && $2 != "offline" && $1 !~ /:[0-9]+$/ && $1 !~ /_adb-tls-connect/ {print $1}'
 }
 
-status "Looking for phones on USB…"
-# The phone can vanish from USB for a moment (e.g. right after a mode switch)
-[[ -n "$(usb_serials)" ]] || sleep 2
-
-for usb in ${(f)"$(usb_serials)"}; do
-  if ! usb_ready "$usb"; then
-    echo "USB phone $usb isn't ready (tap Allow on the phone?) — skipping it"
-    status "A phone on USB isn't ready — tap Allow on the phone"
-    continue
-  fi
-  learn_phone "$usb" "$usb"
-  USB_OF[$LEARNED_ID]=$usb
-  idx=$(phone_index "$LEARNED_ID")
-  echo "USB: $LEARNED_NAME ($LEARNED_ID) — saved IPs — Ethernet: ${P_ETH[idx]:-none}, Wi-Fi: ${P_WIFI[idx]:-none}"
-  status "Found $LEARNED_NAME on USB"
-
-  # Turn on network mode for later cable-free launches (only if it isn't on already,
-  # because switching it restarts adb on the phone)
-  if [[ "$(adb -s "$usb" shell getprop service.adb.tcp.port 2>/dev/null | tr -d '\r')" != "$PORT" ]]; then
-    echo "Turning on network mode (port $PORT)"
-    status "Setting up $LEARNED_NAME for cable-free use…"
-    adb -s "$usb" tcpip $PORT >/dev/null 2>&1
-    sleep 3
-    usb_ready "$usb"
-  fi
-done
-
-# ---- First run of this version: move the IPs saved by an older version ----
-# They didn't record which phone they belong to, so ask whoever answers there.
-# The old file only ever held one phone's IPs, so an IP nobody answers at goes
-# to the phone found at the other IP (or the one plugged in by USB).
-if (( MIGRATE )); then
-  echo "Moving saved IPs from $OLD_IPS_FILE to $PHONES_FILE"
-  OLD_ETH="" OLD_WIFI="" OLD_OWNER=""
-  for line in ${(f)"$(<"$OLD_IPS_FILE")"}; do
-    line=${line%$'\r'}                                 # written with Windows line ends there
-    kind=${line%% *} ip=${line#* }
-    [[ $kind == (eth|wifi) && -n "$ip" && "$ip" != "$kind" ]] || continue
-    if (( ${P_ETH[(Ie)$ip]} )); then                        # already known from USB
-      OLD_OWNER=${OLD_OWNER:-${P_ID[${P_ETH[(Ie)$ip]}]}}; continue
-    elif (( ${P_WIFI[(Ie)$ip]} )); then
-      OLD_OWNER=${OLD_OWNER:-${P_ID[${P_WIFI[(Ie)$ip]}]}}; continue
-    fi
-    echo "Checking which phone is at $ip..."
-    status "Checking which phone is at $ip…"
-    if try_connect "$ip"; then
-      learn_phone "$SERIAL" "" "$ip" "$kind"
-      OLD_OWNER=${OLD_OWNER:-$LEARNED_ID}
-      SERIAL=""
-    elif [[ $kind == eth ]]; then
-      OLD_ETH=$ip
-    else
-      OLD_WIFI=$ip
-    fi
-  done
-  (( ${#USB_OF} == 1 )) && OLD_OWNER=${OLD_OWNER:-${(k)USB_OF}}
-  if [[ -n "$OLD_ETH$OLD_WIFI" ]]; then
-    if idx=$(phone_index "$OLD_OWNER") && [[ -n "$OLD_OWNER" ]]; then
-      [[ -z "${P_ETH[idx]}"  ]] && P_ETH[idx]=$OLD_ETH
-      [[ -z "${P_WIFI[idx]}" ]] && P_WIFI[idx]=$OLD_WIFI
-    elif ! phone_index "" >/dev/null; then
-      # Nobody answered: keep the IPs, the phone gets identified on its first connection
-      P_ID+=("") P_NAME+=("Phone") P_ETH+=("$OLD_ETH") P_WIFI+=("$OLD_WIFI")
-    fi
-  fi
-  write_phones
-  rm -f "$OLD_IPS_FILE"
-fi
-
-# ---- Which phone? ----
-# Every saved phone, once each (a phone plugged in by USB is saved above, so it's
-# in the list too, marked "USB"). Asked only when there's more than one.
-if (( ${#P_ID} == 0 )); then
-  echo "No phone found. Plug in the cable once (after each phone restart) to turn on network mode." >&2
-  alert "no phone found" "Plug the phone in with a USB cable once (needed after every phone restart), so PhoneConnect can turn on network mode.
-
-Make sure USB debugging is on and you tapped Allow on the phone."
-  exit 1
-fi
-
-phone_label() {   # phone_label <index>
+phoneLabel() {    # phoneLabel <index>: how a saved phone is listed in the chooser
   local i=$1 j same=0 label=${P_NAME[$1]:-Phone}
   for (( j = 1; j <= ${#P_NAME}; j++ )); do
     [[ "${P_NAME[j]}" == "${P_NAME[i]}" ]] && (( same++ ))
@@ -502,142 +405,368 @@ phone_label() {   # phone_label <index>
   print -r -- "$label"
 }
 
-CHOSEN_ID=${P_ID[1]}
-if (( ${#P_ID} > 1 )); then
-  LABELS=() DEFAULT_LABEL=""
-  for (( i = 1; i <= ${#P_ID}; i++ )); do
-    LABELS+=("$(phone_label $i)")
-    [[ -z "$DEFAULT_LABEL" && -n "${P_ID[i]}" && -n "${USB_OF[${P_ID[i]}]}" ]] && DEFAULT_LABEL=${LABELS[i]}
-  done
-  status "Choose a phone…"
-  choice=$(choose "Which phone do you want to connect to?" "${DEFAULT_LABEL:-${LABELS[1]}}" "${LABELS[@]}")
-  [[ -z "$choice" ]] && exit 0   # Cancel
-  CHOSEN_ID=${P_ID[${LABELS[(ie)$choice]}]}
-fi
+# =====================================================================
+# Steps (run by main, in this order)
+# =====================================================================
 
-# ---- Connect to it. Priority: 1. USB   2. Ethernet (dock)   3. Wi-Fi ----
-if [[ -n "$CHOSEN_ID" && -n "${USB_OF[$CHOSEN_ID]}" ]]; then
-  # ---- 1. USB ----
-  SERIAL=${USB_OF[$CHOSEN_ID]}
-  LINK="USB"
-else
-  # ---- 2. Ethernet, 3. Wi-Fi ----
-  for kind in eth wifi; do
-    idx=$(phone_index "$CHOSEN_ID") || break
-    [[ $kind == eth ]] && ip=${P_ETH[idx]} || ip=${P_WIFI[idx]}
-    [[ -z "$ip" ]] && continue
-    echo "Trying $kind at $ip..."
-    status "Connecting to $(phone_saved_name "$CHOSEN_ID") over ${${kind:s/eth/Ethernet}:s/wifi/Wi-Fi} ($ip)…"
-    if try_connect "$ip" && claim_connection "$CHOSEN_ID" "$ip" $kind; then
-      [[ $kind == eth ]] && LINK="Ethernet" || LINK="Wi-Fi"
-      break
-    fi
-  done
-
-  # Fallback: the phone connected through Android's Wireless debugging (found automatically)
-  if [[ -z "$SERIAL" ]]; then
-    for wd in ${(f)"$(adb devices | awk 'NR>1 && $2=="device" && $1 ~ /_adb-tls-connect\._tcp/ {print $1}')"}; do
-      if [[ -z "$CHOSEN_ID" || "$(phone_id "$wd")" == "$CHOSEN_ID" ]]; then
-        SERIAL=$wd
-        LINK="Wireless debugging"
-        learn_phone "$SERIAL" "$CHOSEN_ID"
-        CHOSEN_ID=$LEARNED_ID
+# Open the status window and keep it informed; its Cancel stops this script
+startStatusWindow() {
+  : > "$STATUS_FILE"
+  : > "$STATUS_FILE.alive"
+  # Keeps STATUS_FILE.alive fresh, and stops this script when Cancel was pressed
+  {
+    while true; do
+      if [[ -e "$STATUS_FILE.cancel" ]]; then
+        echo "Cancel pressed in the status window — stopping"
+        kill -TERM $$
         break
       fi
+      : > "$STATUS_FILE.alive"
+      zselect -t 50
     done
-  fi
+  } &!
+  STATUS_WATCHER=$!
+  showStatus "Starting…"
+  platform status_window "$STATUS_FILE" >/dev/null
+  platform unquarantine
+  return 0
+}
 
-  if [[ -z "$SERIAL" ]]; then
-    name=$(phone_saved_name "$CHOSEN_ID"); name=${name:-the phone}
-    echo "Couldn't connect to $name: every connection attempt failed." >&2
-    status "Couldn't connect to $name"
-    alert "couldn't connect" "Couldn't connect to $name.
+# Make sure adb and scrcpy are there
+checkTools() {
+  local tool
+  for tool in "$ADB" "$SCRCPY"; do
+    if [[ ! -x "$tool" ]]; then
+      echo "$tool not found" >&2
+      showAlert "${tool:t} missing" "PhoneConnect is incomplete. Please reinstall it."
+      return 1
+    fi
+  done
+  echo "Tools: $("$ADB" version 2>&1 | head -1), $("$SCRCPY" --version 2>&1 | head -1)"
+}
+
+# Start adb's background server on its own, without capturing its output: started
+# by a later captured command, it would inherit that output pipe and hold it open.
+startAdbServer() {
+  "$ADB" start-server >/dev/null 2>&1
+  echo "adb server started"
+}
+
+# Read the saved phones; note whether the older single-phone file still has to be moved
+loadSavedDevices() {
+  local n i
+  P_ID=() P_NAME=() P_ETH=() P_WIFI=()
+  [[ ! -e "$PHONES_FILE" && -e "$OLD_IPS_FILE" ]] && MIGRATE=1 || MIGRATE=0
+  [[ -s "$PHONES_FILE" ]] || return 0
+  n=$(xmllint --xpath 'count(/phones/phone)' "$PHONES_FILE" 2>/dev/null)
+  for (( i = 1; i <= ${n:-0}; i++ )); do
+    P_ID+=("$(xmllint --xpath "string(/phones/phone[$i]/@id)" "$PHONES_FILE" 2>/dev/null)")
+    P_NAME+=("$(xmllint --xpath "string(/phones/phone[$i]/@name)" "$PHONES_FILE" 2>/dev/null)")
+    P_ETH+=("$(xmllint --xpath "string(/phones/phone[$i]/@eth)" "$PHONES_FILE" 2>/dev/null)")
+    P_WIFI+=("$(xmllint --xpath "string(/phones/phone[$i]/@wifi)" "$PHONES_FILE" 2>/dev/null)")
+  done
+  return 0
+}
+
+# Drop wireless entries that are stuck "offline" (e.g. from an old IP)
+dropOfflineConnections() {
+  local d
+  for d in ${(f)"$(adb devices | awk 'NR>1 && $2=="offline" && $1 ~ /:[0-9]+$/ {print $1}')"}; do
+    adb disconnect "$d" >/dev/null 2>&1
+  done
+  return 0
+}
+
+# Which phones are plugged in by USB now -> USB_SERIALS
+listConnectedDevices() {
+  showStatus "Looking for phones on USB…"
+  # The phone can vanish from USB for a moment (e.g. right after a mode switch)
+  [[ -n "$(usbSerials)" ]] || sleep 2
+  USB_SERIALS=(${(f)"$(usbSerials)"})
+  echo "Phones on USB: ${USB_SERIALS[*]:-none}"
+  return 0
+}
+
+# For each phone plugged in: save its Ethernet and Wi-Fi IPs and turn on network
+# mode, so later launches can connect without the cable (until the phone restarts).
+prepareUsbDevices() {
+  local usb idx
+  for usb in $USB_SERIALS; do
+    if ! waitUsbReady "$usb"; then
+      echo "USB phone $usb isn't ready (tap Allow on the phone?) — skipping it"
+      showStatus "A phone on USB isn't ready — tap Allow on the phone"
+      continue
+    fi
+    learnPhone "$usb" "$usb"
+    USB_OF[$LEARNED_ID]=$usb
+    idx=$(phoneIndex "$LEARNED_ID")
+    echo "USB: $LEARNED_NAME ($LEARNED_ID) — saved IPs — Ethernet: ${P_ETH[idx]:-none}, Wi-Fi: ${P_WIFI[idx]:-none}"
+    showStatus "Found $LEARNED_NAME on USB"
+    step enableNetworkMode "$usb"
+  done
+  return 0
+}
+
+# Turn on network mode for later cable-free launches (only if it isn't on already,
+# because switching it restarts adb on the phone)
+enableNetworkMode() {    # enableNetworkMode <usb serial>
+  [[ "$(adb -s "$1" shell getprop service.adb.tcp.port 2>/dev/null | tr -d '\r')" == "$PORT" ]] && return 0
+  echo "Turning on network mode (port $PORT)"
+  showStatus "Setting up $LEARNED_NAME for cable-free use…"
+  adb -s "$1" tcpip $PORT >/dev/null 2>&1
+  sleep 3
+  waitUsbReady "$1"
+}
+
+# First run of this version: move the IPs saved by an older version. They didn't
+# record which phone they belong to, so ask whoever answers there. The old file only
+# ever held one phone's IPs, so an IP nobody answers at goes to the phone found at
+# the other IP (or the one plugged in by USB).
+migrateOldSavedIps() {
+  (( MIGRATE )) || return 0
+  local line kind ip idx old_eth="" old_wifi="" old_owner=""
+  echo "Moving saved IPs from $OLD_IPS_FILE to $PHONES_FILE"
+  for line in ${(f)"$(<"$OLD_IPS_FILE")"}; do
+    line=${line%$'\r'}                                 # written with Windows line ends there
+    kind=${line%% *} ip=${line#* }
+    [[ $kind == (eth|wifi) && -n "$ip" && "$ip" != "$kind" ]] || continue
+    if (( ${P_ETH[(Ie)$ip]} )); then                        # already known from USB
+      old_owner=${old_owner:-${P_ID[${P_ETH[(Ie)$ip]}]}}; continue
+    elif (( ${P_WIFI[(Ie)$ip]} )); then
+      old_owner=${old_owner:-${P_ID[${P_WIFI[(Ie)$ip]}]}}; continue
+    fi
+    echo "Checking which phone is at $ip..."
+    showStatus "Checking which phone is at $ip…"
+    if connectTo "$ip"; then
+      learnPhone "$SERIAL" "" "$ip" "$kind"
+      old_owner=${old_owner:-$LEARNED_ID}
+      SERIAL=""
+    elif [[ $kind == eth ]]; then
+      old_eth=$ip
+    else
+      old_wifi=$ip
+    fi
+  done
+  (( ${#USB_OF} == 1 )) && old_owner=${old_owner:-${(k)USB_OF}}
+  if [[ -n "$old_eth$old_wifi" ]]; then
+    if idx=$(phoneIndex "$old_owner") && [[ -n "$old_owner" ]]; then
+      [[ -z "${P_ETH[idx]}"  ]] && P_ETH[idx]=$old_eth
+      [[ -z "${P_WIFI[idx]}" ]] && P_WIFI[idx]=$old_wifi
+    elif ! phoneIndex "" >/dev/null; then
+      # Nobody answered: keep the IPs, the phone gets identified on its first connection
+      P_ID+=("") P_NAME+=("Phone") P_ETH+=("$old_eth") P_WIFI+=("$old_wifi")
+    fi
+  fi
+  writeSavedDevices
+  rm -f "$OLD_IPS_FILE"
+  return 0
+}
+
+# Nothing saved and nothing plugged in: tell the user to plug the phone in
+checkAnyDeviceKnown() {
+  (( ${#P_ID} > 0 )) && return 0
+  echo "No phone found. Plug in the cable once (after each phone restart) to turn on network mode." >&2
+  showAlert "no phone found" "Plug the phone in with a USB cable once (needed after every phone restart), so PhoneConnect can turn on network mode.
+
+Make sure USB debugging is on and you tapped Allow on the phone."
+  return 1
+}
+
+# Which phone? Every saved phone, once each (a phone plugged in by USB is saved by
+# now, so it's in the list too, marked "USB"). Asked only when there's more than one.
+# -> CHOSEN_ID
+displayDeviceChoiceDialog() {
+  local i choice default_label=""
+  local -a labels
+  CHOSEN_ID=${P_ID[1]}
+  (( ${#P_ID} > 1 )) || return 0
+  for (( i = 1; i <= ${#P_ID}; i++ )); do
+    labels+=("$(phoneLabel $i)")
+    [[ -z "$default_label" && -n "${P_ID[i]}" && -n "${USB_OF[${P_ID[i]}]}" ]] && default_label=${labels[i]}
+  done
+  showStatus "Choose a phone…"
+  choice=$(chooseItem "Which phone do you want to connect to?" "${default_label:-${labels[1]}}" "${labels[@]}")
+  [[ -z "$choice" ]] && return 2   # Cancel
+  CHOSEN_ID=${P_ID[${labels[(ie)$choice]}]}
+  return 0
+}
+
+# ---- Connecting. Priority: 1. USB   2. Ethernet (dock)   3. Wi-Fi ----
+
+tryUsbConnection() {
+  [[ -n "$CHOSEN_ID" && -n "${USB_OF[$CHOSEN_ID]}" ]] || return 1
+  SERIAL=${USB_OF[$CHOSEN_ID]}
+  LINK="USB"
+  return 0
+}
+
+# tryNetworkConnection <eth|wifi>: connect to the chosen phone's saved IP of that kind
+tryNetworkConnection() {
+  local kind=$1 idx ip
+  idx=$(phoneIndex "$CHOSEN_ID") || return 1
+  [[ $kind == eth ]] && ip=${P_ETH[idx]} || ip=${P_WIFI[idx]}
+  if [[ -z "$ip" ]]; then
+    echo "No saved $kind IP"
+    return 1
+  fi
+  echo "Trying $kind at $ip..."
+  showStatus "Connecting to $(savedName "$CHOSEN_ID") over ${${kind:s/eth/Ethernet}:s/wifi/Wi-Fi} ($ip)…"
+  connectTo "$ip" && claimConnection "$CHOSEN_ID" "$ip" $kind || return 1
+  [[ $kind == eth ]] && LINK="Ethernet" || LINK="Wi-Fi"
+  return 0
+}
+
+tryEthernetConnection() { tryNetworkConnection eth; }
+tryWifiConnection()     { tryNetworkConnection wifi; }
+
+# Fallback: the phone connected through Android's Wireless debugging (found automatically)
+tryWirelessDebuggingConnection() {
+  local wd
+  for wd in ${(f)"$(adb devices | awk 'NR>1 && $2=="device" && $1 ~ /_adb-tls-connect\._tcp/ {print $1}')"}; do
+    if [[ -z "$CHOSEN_ID" || "$(phoneId "$wd")" == "$CHOSEN_ID" ]]; then
+      SERIAL=$wd
+      LINK="Wireless debugging"
+      learnPhone "$SERIAL" "$CHOSEN_ID"
+      CHOSEN_ID=$LEARNED_ID
+      return 0
+    fi
+  done
+  return 1
+}
+
+# The saved IPs were refreshed while connecting (they may have changed). This is also
+# how the Ethernet IP gets learned: it only exists while the phone is docked, and then
+# there's no USB, so it's read over the Wi-Fi connection. Docked but we came in over
+# Wi-Fi: switch this session to Ethernet.
+switchToEthernetIfDocked() {
+  local prev_serial=$SERIAL
+  [[ -n "$LEARNED_ETH" && "$LINK" != "Ethernet" ]] || return 0
+  echo "Phone has Ethernet ($LEARNED_ETH) — switching to it"
+  showStatus "Switching to Ethernet ($LEARNED_ETH)…"
+  if connectTo "$LEARNED_ETH" && claimConnection "$CHOSEN_ID" "$LEARNED_ETH" eth; then
+    LINK="Ethernet"
+  else
+    SERIAL=$prev_serial
+    echo "Ethernet not reachable, staying on $LINK"
+  fi
+  return 0
+}
+
+reportConnectionFailure() {
+  local name
+  name=$(savedName "$CHOSEN_ID"); name=${name:-the phone}
+  echo "Couldn't connect to $name: every connection attempt failed." >&2
+  showStatus "Couldn't connect to $name"
+  showAlert "couldn't connect" "Couldn't connect to $name.
 
 • Connect the phone to this computer with a USB cable, or
 • make sure the phone is on the same network (Wi-Fi or dock Ethernet) as this computer.
 
 After the phone restarts, the cable is needed once."
-    exit 1
-  fi
+}
 
-  # The saved IPs were refreshed while connecting (they may have changed).
-  # This is also how the Ethernet IP gets learned: it only exists while the phone
-  # is docked, and then there's no USB, so it's read over the Wi-Fi connection.
-  # Docked but we came in over Wi-Fi: switch this session to Ethernet
-  if [[ -n "$LEARNED_ETH" && "$LINK" != "Ethernet" ]]; then
-    PREV_SERIAL=$SERIAL
-    echo "Phone has Ethernet ($LEARNED_ETH) — switching to it"
-    status "Switching to Ethernet ($LEARNED_ETH)…"
-    if try_connect "$LEARNED_ETH" && claim_connection "$CHOSEN_ID" "$LEARNED_ETH" eth; then
-      LINK="Ethernet"
-    else
-      SERIAL=$PREV_SERIAL
-      echo "Ethernet not reachable, staying on $LINK"
+# Connect to the chosen phone -> SERIAL, LINK, PHONE_NAME
+connectToChosenDevice() {
+  if ! step tryUsbConnection; then
+    step tryEthernetConnection || step tryWifiConnection || step tryWirelessDebuggingConnection
+    if [[ -z "$SERIAL" ]]; then
+      reportConnectionFailure
+      return 1
     fi
+    step switchToEthernetIfDocked
   fi
-fi
+  markUsed "$CHOSEN_ID"
+  PHONE_NAME=$(savedName "$CHOSEN_ID"); PHONE_NAME=${PHONE_NAME:-$LEARNED_NAME}
+  echo "Connection: $PHONE_NAME — $LINK ($SERIAL)"
+  showStatus "Connected to $PHONE_NAME over $LINK"
+  return 0
+}
 
-mark_used "$CHOSEN_ID"
-PHONE_NAME=$(phone_saved_name "$CHOSEN_ID"); PHONE_NAME=${PHONE_NAME:-$LEARNED_NAME}
-CONN=(-s "$SERIAL")
-echo "Connection: $PHONE_NAME — $LINK ($SERIAL)"
-status "Connected to $PHONE_NAME over $LINK"
+# Look for a DeX (external) display: any display other than 0 -> DEX_ID
+findDexDisplay() {
+  showStatus "Looking for a DeX screen…"
+  DEX_ID=$(LOGGED_LABEL="scrcpy -s $SERIAL --list-displays" runLogged "$SCRCPY" -s "$SERIAL" --list-displays 2>&1 \
+    | grep -o 'display-id=[0-9]*' \
+    | cut -d= -f2 \
+    | grep -v '^0$' \
+    | head -1)
+  return 0
+}
 
-status "Looking for a DeX screen…"
-
-# ---- Look for a DeX (external) display: any display other than 0 ----
-DEX_ID=$(LOGGED_LABEL="scrcpy ${CONN[*]} --list-displays" logged "$SCRCPY" "${CONN[@]}" --list-displays 2>&1 \
-  | grep -o 'display-id=[0-9]*' \
-  | cut -d= -f2 \
-  | grep -v '^0$' \
-  | head -1)
-
-TARGET="phone"
-if [[ -n "$DEX_ID" ]]; then
-  choice=$(ask "A DeX display is connected. What do you want to mirror?" "Phone screen" "DeX")
-  [[ -z "$choice" ]] && exit 0   # Cancel
+# DeX or the phone screen? (asked only when there's a DeX display) -> TARGET
+askMirrorTarget() {
+  local choice
+  TARGET="phone"
+  [[ -n "$DEX_ID" ]] || return 0
+  choice=$(askQuestion "A DeX display is connected. What do you want to mirror?" "Phone screen" "DeX")
+  [[ -z "$choice" ]] && return 2   # Cancel
   [[ "$choice" == "DeX" ]] && TARGET="dex"
-fi
+  return 0
+}
 
-# ---- Audio ----
-choice=$(ask "Play the phone's sound on this computer?
+# Sound on this computer? -> AUDIO, AUDIO_CHOICE
+askAudio() {
+  AUDIO_CHOICE=$(askQuestion "Play the phone's sound on this computer?
 
 (While on, the phone's own speaker is muted.)" "No audio" "With audio")
-[[ -z "$choice" ]] && exit 0   # Cancel
-if [[ "$choice" == "With audio" ]]; then
-  AUDIO=()
-else
-  AUDIO=(--no-audio)
-fi
+  [[ -z "$AUDIO_CHOICE" ]] && return 2   # Cancel
+  if [[ "$AUDIO_CHOICE" == "With audio" ]]; then
+    AUDIO=()
+  else
+    AUDIO=(--no-audio)
+  fi
+  return 0
+}
 
-# Start scrcpy and watch it. Over the network it sometimes starts the server on
-# the phone and then stalls instead of showing the picture. If no picture shows
-# within 15 s, kill it, clear the tunnels and retry (up to 3 attempts).
-run_scrcpy() {
-  local attempt pid ok t rc out="$TMPDIR/PhoneConnect.$$.scrcpy.out"
-  local extra=()
+# waitForPicture <job pid> <output file>: up to 15 s for the first frame; fails if
+# none came or scrcpy ended
+waitForPicture() {
+  local t
+  for t in {1..15}; do
+    zsh -f "$PLATFORM/picture_up.sh" $1 "$2" && return 0   # first frame shown
+    kill -0 $1 2>/dev/null || return 1                      # scrcpy exited
+    sleep 1
+  done
+  return 1
+}
+
+# Start scrcpy and watch it. Over the network it sometimes starts the server on the
+# phone and then stalls instead of showing the picture. If no picture shows within
+# 15 s, stop it, clear the tunnels and retry (up to 3 attempts). Returns scrcpy's
+# exit code once the session ends.
+runScrcpyWithRetries() {
+  local attempt pid rc out="$TMPDIR/PhoneConnect.$$.scrcpy.out"
+  local -a args extra
+  # -V debug: scrcpy's detailed messages, for the log
+  # bitrate-mode=1: variable bit rate. The bit rate is an average, so frames with a lot
+  # of motion (scrolling) may use more instead of being held back.
+  local -a common=(-s "$SERIAL" -K --video-codec=h265 --max-fps=60 --video-codec-options=bitrate-mode:int=1 -V debug "${AUDIO[@]}")
+  if [[ "$TARGET" == "dex" ]]; then
+    echo "Mirroring DeX (display $DEX_ID), audio: $AUDIO_CHOICE"
+    args=("${common[@]}" --display-id="$DEX_ID" --video-bit-rate=8M
+          --window-title="PhoneConnect — $PHONE_NAME, DeX ($LINK)" "$@")
+  else
+    echo "Mirroring phone screen, audio: $AUDIO_CHOICE"
+    args=("${common[@]}" --max-size=1600 --video-bit-rate=6M
+          --window-title="PhoneConnect — $PHONE_NAME ($LINK)" "$@")
+  fi
+
   for attempt in 1 2 3; do
     : > "$out"
-    echo "Starting (attempt $attempt): scrcpy ${extra[*]} $*"
-    if (( attempt == 1 )); then status "Waiting for the picture…"
-    else status "No picture yet — retrying (attempt $attempt of 3)…"; fi
-    zsh -f "$PLATFORM/run_scrcpy.sh" "${extra[@]}" "$@" < /dev/null > >(tee -a "$out" | stamp scrcpy) 2>&1 &
+    echo "Starting (attempt $attempt): scrcpy ${extra[*]} ${args[*]}"
+    if (( attempt == 1 )); then showStatus "Waiting for the picture…"
+    else showStatus "No picture yet — retrying (attempt $attempt of 3)…"; fi
+    zsh -f "$PLATFORM/run_scrcpy.sh" "${extra[@]}" "${args[@]}" < /dev/null > >(tee -a "$out" | stampLines scrcpy) 2>&1 &
     pid=$!
     SCRCPY_JOB=$pid
-    ok=0
-    for t in {1..15}; do
-      zsh -f "$PLATFORM/picture_up.sh" $pid "$out" && { ok=1; break; }   # first frame shown
-      kill -0 $pid 2>/dev/null || break                                 # scrcpy exited
-      sleep 1
-    done
-    if (( ok )); then
+    if step waitForPicture $pid "$out"; then
       echo "Picture is up"
-      status --done
+      showStatus --done
       platform bring_to_front $pid
       wait $pid; rc=$?
       echo "scrcpy ended (exit $rc)"
       rm -f "$out"
-      exit $rc
+      return $rc
     fi
     if (( attempt < 3 )); then
       echo "scrcpy didn't connect (attempt $attempt of 3) — retrying"
@@ -651,23 +780,40 @@ run_scrcpy() {
     sleep 1
   done
   rm -f "$out"
-  status "No picture from the phone after 3 tries"
-  alert "couldn't start" "No picture from the phone after 3 tries. Details are in $LOG_FILE"
-  exit 1
+  showStatus "No picture from the phone after 3 tries"
+  showAlert "couldn't start" "No picture from the phone after 3 tries. Details are in $LOG_FILE"
+  return 1
 }
 
-# -V debug: scrcpy's detailed messages, for the log
-# bitrate-mode=1: variable bit rate. The bit rate is an average, so frames with a lot of
-# motion (scrolling) may use more instead of being held back.
-COMMON=(--video-codec=h265 --max-fps=60 --video-codec-options=bitrate-mode:int=1 -V debug "${AUDIO[@]}")
+# =====================================================================
+# main: the program, step by step. Exit codes: 0 done or cancelled, 1 failed
+# (the user has been told), otherwise scrcpy's own.
+# =====================================================================
+main() {
+  local rc
+  startLog
+  echo "PhoneConnect $APP_VERSION starting — $OS_INFO, app: $SCRIPT"
 
-if [[ "$TARGET" == "dex" ]]; then
-  echo "Mirroring DeX (display $DEX_ID), audio: $choice"
-  run_scrcpy "${CONN[@]}" -K --display-id="$DEX_ID" "${COMMON[@]}" \
-    --video-bit-rate=8M --window-title="PhoneConnect — $PHONE_NAME, DeX ($LINK)" "$@"
-else
-  echo "Mirroring phone screen, audio: $choice"
-  run_scrcpy "${CONN[@]}" -K "${COMMON[@]}" \
-    --max-size=1600 --video-bit-rate=6M \
-    --window-title="PhoneConnect — $PHONE_NAME ($LINK)" "$@"
-fi
+  step startStatusWindow
+  step checkTools                || exit 1
+  step startAdbServer
+  step loadSavedDevices
+  step dropOfflineConnections
+  step listConnectedDevices
+  step prepareUsbDevices
+  step migrateOldSavedIps
+  step checkAnyDeviceKnown       || exit 1
+  step displayDeviceChoiceDialog || exit 0      # 2 = cancelled
+  step connectToChosenDevice     || exit 1
+  step findDexDisplay
+  step askMirrorTarget           || exit 0      # cancelled
+  step askAudio                  || exit 0      # cancelled
+  step runScrcpyWithRetries "$@"
+  rc=$?
+  exit $rc
+}
+
+# (set here, not inside main: in zsh an EXIT trap set in a function is that function's)
+trap onExit EXIT
+trap 'exit 143' TERM INT HUP
+main "$@"
