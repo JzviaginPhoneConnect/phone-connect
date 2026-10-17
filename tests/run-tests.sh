@@ -47,7 +47,7 @@ run_app() {
   mkdir -p $HOME
   rm -f $FAKE/choose_args $FAKE/alert $FAKE/scrcpy_args $FAKE/events
   : > $FAKE/connected
-  RUN_START=$(wc -l < $LOG 2>/dev/null || print 0)
+  if [[ -f $LOG ]]; then RUN_START=$(wc -l < $LOG); else RUN_START=0; fi
   zsh -f $APP/PhoneConnect.sh < /dev/null > $WORK/last-run.txt 2>&1
   zselect -t 50                          # let the log writers finish
 }
@@ -120,7 +120,10 @@ print 'Galaxy S23 (…1111)' > $C/choice
 run_app $C
 check "dropped the wrong phone, used the next IP" logged_line "Connection: Galaxy S23 — Wi-Fi (10.0.0.20:5555)"
 check "IP moved between known phones" xml_is "$(xml '  <phone id="AAA1111" name="Galaxy S23" eth="" wifi="10.0.0.20"/>' '  <phone id="BBB2222" name="Galaxy S23" eth="192.168.1.50" wifi="10.0.0.30"/>' '  <phone id="CCC3333" name="Pixel 8" eth="" wifi="10.0.0.8"/>')"
-check "scrcpy got the phone-screen options" file_has scrcpy_args "-s 10.0.0.20:5555 -K --video-codec=h265 --max-fps=60 -V debug --no-audio --max-size=1600 --video-bit-rate=6M --window-title=PhoneConnect — Galaxy S23 (Wi-Fi)"
+# The same priority as the app itself (CI runners may run everything at a raised nice level)
+BASE_NICE=$(ps -o nice= -p $$ 2>/dev/null); BASE_NICE=${BASE_NICE// /}
+check "scrcpy runs at the app's own priority (not lowered for background jobs)" eval '[[ ! -s $FAKE/scrcpy_nice || -z $BASE_NICE || "$(<$FAKE/scrcpy_nice)" == "$BASE_NICE" ]]'
+check "scrcpy got the phone-screen options" file_has scrcpy_args "-s 10.0.0.20:5555 -K --video-codec=h265 --max-fps=60 --video-codec-options=bitrate-mode:int=1 -V debug --no-audio --max-size=1600 --video-bit-rate=6M --window-title=PhoneConnect — Galaxy S23 (Wi-Fi)"
 
 # ==== 2. old IPs nobody answers at, identified later; switch to Ethernet ====
 C=$WORK/later; mkdir -p $C
