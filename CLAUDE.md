@@ -121,6 +121,9 @@ Connection, in order of preference: **USB → Ethernet → Wi-Fi**.
 scrcpy options in use: `-K` (UHID keyboard: real-keyboard mode so the phone's own
 layouts work, which non-English languages need; the language switch is the phone's
 shortcut, and macOS's own Ctrl+Space must be turned off), `--video-codec=h265`, `--max-fps=60`,
+`--video-codec-options=bitrate-mode:int=1` (VBR: the bit rate is an average, peaks allowed;
+seemed a bit smoother when scrolling; Samsung ignores `repeat-previous-frame-after`, so the
+stream is 0 fps when the screen is still),
 `--max-size=1600` and 6M bitrate for the phone screen, 8M for DeX. Audio is asked
 each launch. DeX = any display id other than 0 (asks DeX vs phone screen).
 
@@ -162,6 +165,11 @@ Don't use System Events `set frontmost`: it needs an Automation permission promp
 Dialogs start with `activate` so they come to the front.
 
 ## Gotchas already hit
+
+- zsh's `BG_NICE` (on by default) runs every `&` job at nice 5. scrcpy is started with `&`
+  (for the watchdog), so it ran at lowered priority and mirroring stuttered on the Mac,
+  less smooth than Windows in a VM on the same Mac. `setopt NO_BG_NICE` at the top of the
+  script fixes it; a test checks scrcpy's nice level is 0.
 
 - zsh: `"$1:$PORT"` is parsed as a history modifier (`$1:$…`) → "bad output format
   specification". Always brace: `"${1}:${PORT}"`.

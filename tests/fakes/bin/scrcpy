@@ -5,6 +5,8 @@ case " $* " in
   *" --version "*) print "scrcpy 0.0 (fake)"; exit 0 ;;
 esac
 print -r -- "$*" > $FAKE/scrcpy_args
+# its CPU priority (nice level), where ps can report it
+n=$(ps -o nice= -p $$ 2>/dev/null) && print -r -- "${n// /}" > $FAKE/scrcpy_nice
 print "INFO: Texture: 1080x2340"
 zmodload zsh/zselect; zselect -t 30     # stay up for 0.3 s
 exit 0

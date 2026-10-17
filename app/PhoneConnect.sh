@@ -11,6 +11,11 @@
 # The build replaces @VERSION@ with the release version (e.g. 1.2.3).
 export APP_VERSION="@VERSION@"
 
+# zsh lowers the CPU priority of every job started with "&" (BG_NICE, on by default).
+# scrcpy is started that way (so it can be watched), and at that priority its decoding
+# and drawing stutter. Run background jobs at normal priority.
+setopt NO_BG_NICE
+
 # Paths, tools and files for this OS: TOOLS_DIR ADB SCRCPY SCRCPY_SERVER_PATH
 # PHONES_FILE OLD_IPS_FILE LOG_FILE TMPDIR OS_INFO. Everything ships with the app,
 # so nothing has to be installed. ${0:A:h} is this script's real folder.
@@ -652,7 +657,9 @@ run_scrcpy() {
 }
 
 # -V debug: scrcpy's detailed messages, for the log
-COMMON=(--video-codec=h265 --max-fps=60 -V debug "${AUDIO[@]}")
+# bitrate-mode=1: variable bit rate. The bit rate is an average, so frames with a lot of
+# motion (scrolling) may use more instead of being held back.
+COMMON=(--video-codec=h265 --max-fps=60 --video-codec-options=bitrate-mode:int=1 -V debug "${AUDIO[@]}")
 
 if [[ "$TARGET" == "dex" ]]; then
   echo "Mirroring DeX (display $DEX_ID), audio: $choice"
