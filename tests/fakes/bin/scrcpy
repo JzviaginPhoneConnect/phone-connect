@@ -1,7 +1,8 @@
 #!/bin/zsh -f
-# Fake scrcpy: no DeX display; "shows the picture" at once, then quits.
+# Fake scrcpy: no DeX display (unless FAKE_DEX_DISPLAY=<id>); "shows the picture" at
+# once, then quits.
 case " $* " in
-  *" --list-displays "*) print "    --display-id=0"; exit 0 ;;
+  *" --list-displays "*) print "    --display-id=0"; [[ -n $FAKE_DEX_DISPLAY ]] && print "    --display-id=$FAKE_DEX_DISPLAY"; exit 0 ;;
   *" --version "*) print "scrcpy 0.0 (fake)"; exit 0 ;;
 esac
 print -r -- "$*" > $FAKE/scrcpy_args

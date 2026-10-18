@@ -33,6 +33,9 @@ case $1 in
     case "$*" in
       "getprop ro.serialno") print -r -- "$id" ;;
       "getprop ro.product.model") print "SM-S911B" ;;
+      "getprop ro.product.manufacturer") print -r -- "${FAKE_MAKER-samsung}" ;;
+      "getprop ro.build.version.oneui") print -r -- "${FAKE_ONEUI-}" ;;
+      "getprop ro.build.version.sdk") print -r -- "${FAKE_SDK-34}" ;;
       "settings get global device_name") print -r -- "$name" ;;
       "settings get secure android_id") print "null" ;;
       "getprop service.adb.tcp.port") print -r -- "$port" ;;

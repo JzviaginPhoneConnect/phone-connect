@@ -185,6 +185,39 @@ check "  ...and didn't go on to connect" eval '! run_log | grep -qF "Connection:
 check "status window files cleaned up" eval '[[ -z "$(print -l $(<$FAKE/status_file)*(N))" ]]'
 rm -f $C/cancel_on_choose
 
+# ==== 7. headless DeX / desktop mode (a display scrcpy creates) ====
+C=$WORK/headless; mkdir -p $C
+print 'usbH|HHH6666|Galaxy S25||10.0.0.11|5555' > $C/usb
+asked_buttons() { file_has events "buttons: $1"; }
+print "== Samsung, One UI 8, no external display: chooses headless DeX"
+export FAKE_ONEUI=80000
+print 'DeX headless (experimental)' > $C/answer
+run_app $C
+check "offered as DeX headless" asked_buttons "Phone screen|DeX headless (experimental)"
+check "scrcpy got a new display, not a display id" eval 'file_has scrcpy_args "--new-display=1920x1080/160 --video-bit-rate=8M --window-title=PhoneConnect — Galaxy S25, DeX headless (USB)" && ! file_has scrcpy_args "--display-id"'
+check "no phone setting changed" eval '! grep -qE "settings (put|delete)|setprop" $FAKE/adb.log'
+rm -f $C/answer
+print "== Samsung, One UI 7: not offered"
+export FAKE_ONEUI=70000
+run_app $C
+check "no mirror question" eval '! file_has events "What do you want to mirror?"'
+check "phone screen mirrored" file_has scrcpy_args "--max-size=1600"
+print "== Samsung, One UI 8, real DeX display: only the old question"
+export FAKE_ONEUI=80000 FAKE_DEX_DISPLAY=2
+run_app $C
+check "real DeX offered" asked_buttons "Phone screen|DeX"
+check "  ...headless not offered" eval '! file_has events "headless"'
+unset FAKE_DEX_DISPLAY FAKE_ONEUI
+print "== other phone, Android 16"
+export FAKE_MAKER=Google FAKE_SDK=36
+run_app $C
+check "offered as desktop mode headless" asked_buttons "Phone screen|Desktop mode headless (experimental)"
+print "== other phone, Android 15: not offered"
+export FAKE_SDK=35
+run_app $C
+check "no mirror question" eval '! file_has events "What do you want to mirror?"'
+unset FAKE_MAKER FAKE_SDK
+
 print
 print "$PASS passed, $FAIL failed (log: $LOG)"
 (( FAIL == 0 ))
