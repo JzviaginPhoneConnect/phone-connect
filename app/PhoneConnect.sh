@@ -6,7 +6,8 @@
 # Remembers several phones; asks which one to use when more than one is known.
 # Asks whether to use DeX (if a DeX display exists) and whether to forward audio.
 # Without one, on One UI 8+ / Android 16+ it offers a headless DeX / desktop mode on a
-# display scrcpy creates (experimental; nothing on the phone is changed for it).
+# display scrcpy creates (experimental, after a warning). For that session it turns on
+# floating windows, and afterwards undoes that and restarts the phone's UI (tasks).
 # Connects over USB, Ethernet (dock) or Wi-Fi, in that order of preference.
 # Any extra arguments are passed straight to scrcpy, e.g.:  PhoneConnect --print-fps
 #
@@ -25,7 +26,7 @@ export APP_VERSION="@VERSION@"
 setopt NO_BG_NICE
 
 # Paths, tools and files for this OS: TOOLS_DIR ADB SCRCPY SCRCPY_SERVER_PATH
-# PHONES_FILE OLD_IPS_FILE LOG_FILE TMPDIR OS_INFO. Everything ships with the app,
+# PHONES_FILE TASKS_FILE OLD_IPS_FILE LOG_FILE TMPDIR OS_INFO. Everything ships with the app,
 # so nothing has to be installed. ${0:A:h} is this script's real folder.
 SCRIPT="${0:A}"
 PLATFORM="${SCRIPT:h}/platform"
@@ -51,6 +52,9 @@ LEARNED_ID="" LEARNED_NAME="" LEARNED_ETH=""   # set by learnPhone
 DEX_ID=""                             # id of the DeX display, if there is one
 VIRTUAL_DESKTOP=""                    # label of the headless desktop option, if the phone supports it
 TARGET="phone"                        # phone, dex or virtual (headless desktop)
+typeset -a T_PHONE T_ACTION T_NS T_KEY T_VALUE  # tasks still to do on phones (see "Tasks")
+TASKS_ADDED=0                         # 1: this run added tasks (run them again on exit)
+TASK_SERIAL="" TASK_OPENED=""         # set by reachPhone
 AUDIO=() AUDIO_CHOICE=""              # scrcpy's audio option, and the answer given
 SCRCPY_JOB=""                         # background job running scrcpy
 STATUS_WATCHER=""                     # background loop for the status window
@@ -180,9 +184,12 @@ showAlert() { platform show_alert "$@" >/dev/null; }
 # When this script ends, however it ends: close the window, stop the watcher, and
 # don't leave a still-starting scrcpy behind (e.g. after Cancel)
 onExit() {
-  showStatus --done
   [[ -n "$STATUS_WATCHER" ]] && kill $STATUS_WATCHER 2>/dev/null
   [[ -n "$SCRCPY_JOB" ]] && kill -0 $SCRCPY_JOB 2>/dev/null && platform stop_scrcpy $SCRCPY_JOB
+  # main runs finishTasks after the session; this is for runs stopped before that
+  # (Cancel in the status window, TERM/INT/HUP)
+  (( TASKS_ADDED )) && step finishTasks
+  showStatus --done
   zf_rm -f "$STATUS_FILE.alive" "$STATUS_FILE.cancel"
   # give the window a moment to read "__done__" before the file goes
   zselect -t 50
@@ -273,6 +280,155 @@ forgetIp() {      # forgetIp <id> <ip>
   [[ "${P_ETH[idx]}"  == "$2" ]] && P_ETH[idx]=""
   [[ "${P_WIFI[idx]}" == "$2" ]] && P_WIFI[idx]=""
   writeSavedDevices
+}
+
+# =====================================================================
+# Tasks
+# Things still to do on a phone, kept in TASKS_FILE (XML) until they're done, so they
+# get done even when the phone was out of reach at the end of a session:
+#   <task phone="id" action="setting" namespace="global" key="k" value="v"/>
+#       put a setting back (empty value: delete it, it wasn't set before)
+#   <task phone="id" action="restart-systemui"/>
+#       restart the phone's interface (SystemUI)
+# executeTasks runs them at start; finishTasks after the session (from main, or from
+# onExit if the run was stopped early). A task is only written when the app is about to
+# make the change it undoes, and removed once done.
+# =====================================================================
+loadTasks() {
+  local n i
+  T_PHONE=() T_ACTION=() T_NS=() T_KEY=() T_VALUE=()
+  [[ -s "$TASKS_FILE" ]] || return 0
+  n=$(xmllint --xpath 'count(/tasks/task)' "$TASKS_FILE" 2>/dev/null)
+  for (( i = 1; i <= ${n:-0}; i++ )); do
+    T_PHONE+=("$(xmllint --xpath "string(/tasks/task[$i]/@phone)" "$TASKS_FILE" 2>/dev/null)")
+    T_ACTION+=("$(xmllint --xpath "string(/tasks/task[$i]/@action)" "$TASKS_FILE" 2>/dev/null)")
+    T_NS+=("$(xmllint --xpath "string(/tasks/task[$i]/@namespace)" "$TASKS_FILE" 2>/dev/null)")
+    T_KEY+=("$(xmllint --xpath "string(/tasks/task[$i]/@key)" "$TASKS_FILE" 2>/dev/null)")
+    T_VALUE+=("$(xmllint --xpath "string(/tasks/task[$i]/@value)" "$TASKS_FILE" 2>/dev/null)")
+  done
+  return 0
+}
+
+writeTasks() {
+  local i tmp="$TASKS_FILE.tmp"
+  if (( ${#T_PHONE} == 0 )); then
+    zf_rm -f "$TASKS_FILE"
+    return 0
+  fi
+  {
+    print -r -- '<?xml version="1.0" encoding="UTF-8"?>'
+    print -r -- '<tasks>'
+    for (( i = 1; i <= ${#T_PHONE}; i++ )); do
+      if [[ "${T_ACTION[i]}" == setting ]]; then
+        print -r -- "  <task phone=\"$(xmlEscape "${T_PHONE[i]}")\" action=\"setting\" namespace=\"$(xmlEscape "${T_NS[i]}")\" key=\"$(xmlEscape "${T_KEY[i]}")\" value=\"$(xmlEscape "${T_VALUE[i]}")\"/>"
+      else
+        print -r -- "  <task phone=\"$(xmlEscape "${T_PHONE[i]}")\" action=\"$(xmlEscape "${T_ACTION[i]}")\"/>"
+      fi
+    done
+    print -r -- '</tasks>'
+  } > "$tmp" && mv -f "$tmp" "$TASKS_FILE"
+}
+
+addTask() {       # addTask <phone id> <action> [<namespace> <key> <value>]
+  loadTasks
+  T_PHONE+=("$1") T_ACTION+=("$2") T_NS+=("$3") T_KEY+=("$4") T_VALUE+=("$5")
+  writeTasks
+  TASKS_ADDED=1
+  echo "Task added for $1: $2${3:+ $3 $4=${5:-(delete)}}"
+}
+
+removeTask() {    # removeTask <index> (call writeTasks afterwards)
+  T_PHONE[$1]=() T_ACTION[$1]=() T_NS[$1]=() T_KEY[$1]=() T_VALUE[$1]=()
+}
+
+pendingPhoneNames() {   # the names of the phones that still have tasks, e.g. "Galaxy S23"
+  local id name
+  local -aU names
+  loadTasks
+  for id in "${T_PHONE[@]}"; do
+    name=$(savedName "$id")
+    names+=("${name:-the phone}")
+  done
+  print -r -- "${(j:, :)names}"
+}
+
+restartSystemUi() {     # restartSystemUi <serial>: done once SystemUI runs under a new pid
+  local before after t
+  before=$(phoneProp "$1" pidof com.android.systemui)
+  withTimeout 8 adb -s "$1" shell am crash com.android.systemui >/dev/null 2>&1
+  for t in {1..10}; do
+    after=$(phoneProp "$1" pidof com.android.systemui)
+    if [[ -n "$after" && "$after" != "$before" ]]; then
+      echo "SystemUI restarted (pid ${before:-?} -> $after)"
+      return 0
+    fi
+    zselect -t 50
+  done
+  echo "SystemUI didn't restart (pid ${before:-?} -> ${after:-?})"
+  return 1
+}
+
+putSetting() {         # putSetting <serial> <namespace> <key> <value>: empty value deletes it
+  if [[ -z "$4" ]]; then
+    withTimeout 8 adb -s "$1" shell settings delete "$2" "$3" >/dev/null 2>&1
+  else
+    withTimeout 8 adb -s "$1" shell settings put "$2" "$3" "$4" >/dev/null 2>&1
+  fi
+  [[ "$(phoneProp "$1" settings get "$2" "$3")" == "$4" ]]
+}
+
+# runTasksFor <phone id> <serial>: settings first, the UI restart last (it also makes
+# the phone pick the settings up); each task that worked is removed
+runTasksFor() {
+  local id=$1 s=$2 i pass
+  local -a done_idx
+  loadTasks
+  for pass in setting restart-systemui; do
+    for (( i = 1; i <= ${#T_PHONE}; i++ )); do
+      [[ "${T_PHONE[i]}" == "$id" && "${T_ACTION[i]}" == "$pass" ]] || continue
+      case $pass in
+        setting)
+          if putSetting "$s" "${T_NS[i]}" "${T_KEY[i]}" "${T_VALUE[i]}"; then
+            echo "Setting ${T_NS[i]} ${T_KEY[i]} put back to ${T_VALUE[i]:-(not set)}"
+            done_idx+=($i)
+          else
+            echo "Couldn't put back setting ${T_NS[i]} ${T_KEY[i]}"
+          fi ;;
+        restart-systemui)
+          restartSystemUi "$s" && done_idx+=($i) ;;
+      esac
+    done
+  done
+  for i in ${(On)done_idx}; do removeTask $i; done
+  writeTasks
+}
+
+# reachPhone <phone id> -> TASK_SERIAL: any way to talk to that phone right now — the
+# current connection, its USB serial, then its saved Ethernet and Wi-Fi IPs (the last
+# connection may be gone, e.g. a USB session whose cable was pulled). TASK_OPENED is a
+# network connection opened just for this.
+reachPhone() {
+  local id=$1 s ip idx keep=$SERIAL
+  TASK_SERIAL="" TASK_OPENED=""
+  for s in "$SERIAL" "${USB_OF[$id]}"; do
+    [[ -n "$s" ]] || continue
+    [[ "$(adb -s "$s" get-state 2>/dev/null)" == device ]] || continue
+    [[ "$(phoneId "$s")" == "$id" ]] && { TASK_SERIAL=$s; return 0; }
+  done
+  idx=$(phoneIndex "$id") || return 1
+  for ip in "${P_ETH[idx]}" "${P_WIFI[idx]}"; do
+    [[ -n "$ip" && "${ip}:${PORT}" != "$keep" ]] || continue
+    if connectTo "$ip"; then
+      s=$SERIAL; SERIAL=$keep
+      if [[ "$(phoneId "$s")" == "$id" ]]; then
+        TASK_SERIAL=$s; TASK_OPENED=$s
+        return 0
+      fi
+      adb disconnect "$s" >/dev/null 2>&1
+    fi
+    SERIAL=$keep
+  done
+  return 1
 }
 
 # =====================================================================
@@ -566,6 +722,39 @@ migrateOldSavedIps() {
 }
 
 # Nothing saved and nothing plugged in: tell the user to plug the phone in
+# Do what's still to do on phones (see "Tasks"), for every phone that has something —
+# at start (before choosing a phone) and on exit. Returns 1 if anything is left.
+executeTasks() {
+  local id name
+  local -aU ids
+  loadTasks
+  ids=("${T_PHONE[@]}")
+  for id in $ids; do
+    name=$(savedName "$id"); name=${name:-the phone}
+    showStatus "Finishing cleanup on $name…"
+    if reachPhone "$id"; then
+      runTasksFor "$id" "$TASK_SERIAL"
+      [[ -n "$TASK_OPENED" ]] && adb disconnect "$TASK_OPENED" >/dev/null 2>&1
+    else
+      echo "Couldn't reach $name ($id) — its tasks wait for the next run"
+    fi
+  done
+  loadTasks
+  (( ${#T_PHONE} == 0 ))
+}
+
+# After a session that added tasks: do them now; if some phone can't be reached, tell
+# the user how to finish. Runs once (TASKS_ADDED back to 0).
+finishTasks() {
+  (( TASKS_ADDED )) || return 0
+  TASKS_ADDED=0
+  step executeTasks && return 0
+  showAlert "couldn't finish cleanup" "Couldn't reach $(pendingPhoneNames) to finish cleaning up after headless mode (turn floating windows back off, restart the phone's interface).
+
+Connect the phone (USB, or the same network) and open PhoneConnect again — it finishes this first. Until then the phone's back gesture may not work; restarting the phone also fixes it."
+  return 1
+}
+
 checkAnyDeviceKnown() {
   (( ${#P_ID} > 0 )) && return 0
   echo "No phone found. Plug in the cable once (after each phone restart) to turn on network mode." >&2
@@ -727,9 +916,45 @@ askMirrorTarget() {
     [[ -z "$choice" ]] && return 2   # Cancel
     [[ "$choice" == "DeX" ]] && TARGET="dex"
   elif [[ -n "$VIRTUAL_DESKTOP" ]]; then
-    choice=$(askQuestion "What do you want to mirror?" "Phone screen" "$VIRTUAL_DESKTOP")
-    [[ -z "$choice" ]] && return 2   # Cancel
-    [[ "$choice" == "$VIRTUAL_DESKTOP" ]] && TARGET="virtual"
+    while true; do
+      choice=$(askQuestion "What do you want to mirror?" "Phone screen" "$VIRTUAL_DESKTOP")
+      [[ -z "$choice" ]] && return 2   # Cancel
+      [[ "$choice" == "$VIRTUAL_DESKTOP" ]] || return 0
+      # "Go back" is the default button
+      choice=$(askQuestion "${VIRTUAL_DESKTOP% \(experimental\)} is experimental.
+
+• After the session the phone's back gesture stops working until its interface restarts. PhoneConnect restarts it when you close the window (the status bar flickers once).
+
+• To give apps their own windows, PhoneConnect turns on \"freeform windows\" (Developer options) for the session and turns it off afterwards.
+
+• If the phone loses its connection before that, connect it again and open PhoneConnect to finish. Restarting the phone also fixes the back gesture." "Continue" "Go back")
+      [[ -z "$choice" ]] && return 2   # Cancel
+      if [[ "$choice" == "Continue" ]]; then
+        TARGET="virtual"
+        return 0
+      fi
+    done
+  fi
+  return 0
+}
+
+# Headless session: write the tasks that undo it, then turn on floating windows (only
+# if it's off; then it's turned off again afterwards). The UI restart is always needed.
+prepareHeadless() {
+  local id old
+  [[ "$TARGET" == virtual ]] || return 0
+  id=$(phoneId "$SERIAL"); id=${id:-$CHOSEN_ID}
+  addTask "$id" restart-systemui
+  old=$(phoneProp "$SERIAL" settings get global enable_freeform_support)
+  if [[ "$old" == 1 ]]; then
+    echo "Floating windows already on — left as is"
+    return 0
+  fi
+  addTask "$id" setting global enable_freeform_support "$old"
+  if putSetting "$SERIAL" global enable_freeform_support 1; then
+    echo "Floating windows turned on (was ${old:-not set})"
+  else
+    echo "Couldn't turn on floating windows"
   fi
   return 0
 }
@@ -745,6 +970,25 @@ askAudio() {
   else
     AUDIO=(--no-audio)
   fi
+  return 0
+}
+
+# useFloatingWindows <scrcpy output file>: open apps on the headless display in
+# resizable windows. Only that display is switched (its id is in scrcpy's "New display:
+# … (id=N)" line); it's gone, setting and all, when scrcpy ends.
+useFloatingWindows() {
+  local id t
+  for t in {1..10}; do      # on Windows scrcpy's output can arrive a little late
+    id=$(grep -o 'New display: .*(id=[0-9]*)' "$1" 2>/dev/null | tail -1 | grep -o 'id=[0-9]*' | cut -d= -f2)
+    [[ -n "$id" ]] && break
+    zselect -t 20
+  done
+  if [[ -z "$id" ]]; then
+    echo "Couldn't find the headless display's id — apps open full screen"
+    return 1
+  fi
+  withTimeout 8 adb -s "$SERIAL" shell cmd window set-display-windowing-mode -d "$id" 5 >/dev/null 2>&1
+  echo "Headless display $id: $(phoneProp "$SERIAL" cmd window get-display-windowing-mode -d "$id")"
   return 0
 }
 
@@ -797,6 +1041,7 @@ runScrcpyWithRetries() {
     SCRCPY_JOB=$pid
     if step waitForPicture $pid "$out"; then
       echo "Picture is up"
+      [[ "$TARGET" == virtual ]] && step useFloatingWindows "$out"
       showStatus --done
       platform bring_to_front $pid
       wait $pid; rc=$?
@@ -838,6 +1083,7 @@ main() {
   step listConnectedDevices
   step prepareUsbDevices
   step migrateOldSavedIps
+  step executeTasks                             # left over from an earlier run
   step checkAnyDeviceKnown       || exit 1
   step displayDeviceChoiceDialog || exit 0      # 2 = cancelled
   step connectToChosenDevice     || exit 1
@@ -845,8 +1091,10 @@ main() {
   step checkVirtualDesktop
   step askMirrorTarget           || exit 0      # cancelled
   step askAudio                  || exit 0      # cancelled
+  step prepareHeadless
   step runScrcpyWithRetries "$@"
   rc=$?
+  step finishTasks                              # undo what the session did to the phone
   exit $rc
 }
 

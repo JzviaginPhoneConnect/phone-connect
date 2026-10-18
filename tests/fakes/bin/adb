@@ -29,6 +29,8 @@ case $1 in
   tcpip) print -r -- "tcpip $S" >> $F/events ;;
   shell)
     shift
+    # a phone that isn't plugged in / answering is an error, like the real adb
+    [[ -z "$(row "$S")" ]] && { print -r -- "error: device '$S' not found" >&2; exec >&-; wait; exit 1; }
     IFS='|' read -r _ id name eth wifi port <<< "$(row "$S")"
     case "$*" in
       "getprop ro.serialno") print -r -- "$id" ;;
@@ -41,6 +43,18 @@ case $1 in
       "getprop service.adb.tcp.port") print -r -- "$port" ;;
       "ip -f inet addr show eth0") [[ -n $eth ]] && print -r -- "    inet $eth/24 brd x scope global eth0" ;;
       "ip -f inet addr show wlan0") [[ -n $wifi ]] && print -r -- "    inet $wifi/24 brd x scope global wlan0" ;;
+      # settings in $F/settings ("<id> <namespace> <key>=<value>"), SystemUI's pid in $F/sysui_pid.<id>
+      "settings get "*) v=$(grep -F "$id $3 $4=" $F/settings 2>/dev/null | tail -1); print -r -- "${${v#*=}:-null}" ;;
+      "settings put "*) { grep -vF "$id $3 $4=" $F/settings 2>/dev/null; print -r -- "$id $3 $4=$5"; } > $F/s.tmp; mv $F/s.tmp $F/settings
+                        print -r -- "settings put $3 $4 $5 ($id)" >> $F/events ;;
+      "settings delete "*) { grep -vF "$id $3 $4=" $F/settings 2>/dev/null; } > $F/s.tmp; mv $F/s.tmp $F/settings
+                        print -r -- "settings delete $3 $4 ($id)" >> $F/events ;;
+      "cmd window set-display-windowing-mode -d "*) print -r -- "display $5 windowing mode $6" >> $F/events ;;
+      "cmd window get-display-windowing-mode -d "*) print -r -- "display windowing mode=freeform for displayId=$5" ;;
+      "pidof com.android.systemui") print -r -- "$(<$F/sysui_pid.$id 2>/dev/null || print 1000)" ;;
+      "am crash com.android.systemui")
+        p=$(<$F/sysui_pid.$id 2>/dev/null || print 1000); print -r -- $(( p + 1 )) > $F/sysui_pid.$id
+        print -r -- "systemui restarted ($id)" >> $F/events ;;
     esac ;;
 esac
 exec >&-; wait

@@ -74,9 +74,30 @@ end user installs nothing and never opens a terminal.
 - **Headless DeX / desktop mode (experimental):** with no external display, a phone on
   One UI 8+ (Samsung, `ro.build.version.oneui` >= 80000) or Android 16+ (others, SDK >= 36)
   is offered "DeX headless (experimental)" / "Desktop mode headless (experimental)":
-  scrcpy `--new-display=1920x1080/160` and the phone renders its desktop there. The app
-  only reads the version; it **never changes phone settings or developer options** for this
-  (the user asked). Without its developer flag a non-Samsung phone may show only a launcher.
+  scrcpy `--new-display=1920x1080/160` and the phone renders its desktop there. Choosing it
+  shows a warning (Continue / Go back, default Go back).
+  - After a headless session Samsung's back gesture stays broken until SystemUI restarts
+    (`am crash com.android.systemui`; works without root). It can't be avoided: in the
+    phone's services.jar, `FLAG_EXTERNAL_DEX_HOSTING` is only set for TYPE_EXTERNAL (HDMI)
+    displays or Miracast ones (device flag 0x4000000, WifiDisplayAdapter); a virtual
+    display is always type 5 without it, whatever flags scrcpy passes.
+  - The **only** things the app does to the phone: turn on `global enable_freeform_support`
+    (floating windows) for the session if it's off, switch the headless display (id from
+    scrcpy's "New display: … (id=N)" line) to freeform with `cmd window
+    set-display-windowing-mode -d N 5` (dies with the display; without it apps open full
+    screen even with freeform support on), and afterwards put the setting back and restart
+    SystemUI. Windows get Samsung's pop-up view handle (menu: maximise, minimise, close,
+    pin), not the DeX title bar: that's only on real DeX displays. Nothing else, and **never anything left running on the phone** (no
+    background loops/watchers; the user rejected that outright).
+  - Undo goes through the **task file** (`TASKS_FILE`: `~/.phoneconnect_tasks.xml` on Mac,
+    `%APPDATA%\PhoneConnect\tasks.xml` on Windows; `<task phone action [namespace key value]/>`,
+    meant for other kinds of tasks later). Tasks are written *before* the change, and
+    removed once done. `executeTasks` (one step) runs them for every phone that has some:
+    at start before the phone chooser, and after the session via `finishTasks` (in `main`
+    after `runScrcpyWithRetries`; from `onExit` only if the run was stopped before that:
+    Cancel, killed) when this run added tasks. `reachPhone` tries the current connection, USB, then the
+    saved Ethernet and Wi-Fi IPs (a USB session whose cable was pulled still gets cleaned
+    up over the network). Still unreachable → an alert: reconnect and open the app again.
 - While a phone is in a USB-C dock, the phone is the USB host, so the computer can't
   reach it over USB through the dock, only over the network (the dock's Ethernet or
   Wi-Fi). A dock without a monitor needs an HDMI dummy plug for DeX to start.

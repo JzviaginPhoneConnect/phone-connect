@@ -34,6 +34,7 @@ source "\${\${(%):-%x}:A:h}/env.real.sh"
 export PATH="$WORK/fakes:\$PATH"
 export ADB="$WORK/fakes/adb" SCRCPY="$WORK/fakes/scrcpy"
 PHONES_FILE="\$FAKE/phones.xml"
+TASKS_FILE="\$FAKE/tasks.xml"
 OLD_IPS_FILE="\$FAKE/old_ips.txt"
 LOG_FILE="$WORK/test.log"
 EOF
@@ -189,14 +190,81 @@ rm -f $C/cancel_on_choose
 C=$WORK/headless; mkdir -p $C
 print 'usbH|HHH6666|Galaxy S25||10.0.0.11|5555' > $C/usb
 asked_buttons() { file_has events "buttons: $1"; }
-print "== Samsung, One UI 8, no external display: chooses headless DeX"
+setting_is()    { [[ "$(grep -F "HHH6666 global enable_freeform_support=" $FAKE/settings 2>/dev/null)" == "${1:+HHH6666 global enable_freeform_support=$1}" ]]; }
+no_tasks()      { [[ ! -e $FAKE/tasks.xml ]]; }
+print "== Samsung, One UI 8, no external display: headless DeX, warning, Continue"
 export FAKE_ONEUI=80000
-print 'DeX headless (experimental)' > $C/answer
+print 'DeX headless (experimental)\nContinue' > $C/answers
 run_app $C
 check "offered as DeX headless" asked_buttons "Phone screen|DeX headless (experimental)"
+check "warned, with Go back as an option" eval 'file_has events "ask: DeX headless is experimental." && asked_buttons "Continue|Go back"'
 check "scrcpy got a new display, not a display id" eval 'file_has scrcpy_args "--new-display=1920x1080/160 --video-bit-rate=8M --window-title=PhoneConnect — Galaxy S25, DeX headless (USB)" && ! file_has scrcpy_args "--display-id"'
-check "no phone setting changed" eval '! grep -qE "settings (put|delete)|setprop" $FAKE/adb.log'
-rm -f $C/answer
+check "floating windows turned on before scrcpy started" eval 'run_log | grep -n -e "Floating windows turned on" -e "Starting (attempt 1)" | head -1 | grep -qF "Floating windows"'
+check "...and off again afterwards (it wasn't set before)" eval 'file_has events "settings delete global enable_freeform_support (HHH6666)" && setting_is ""'
+check "headless display switched to floating windows" file_has events "display 7 windowing mode 5"
+check "phone UI restarted" file_has events "systemui restarted (HHH6666)"
+check "no tasks left" no_tasks
+check "cleanup is a step in main, after scrcpy ended" eval 'run_log | grep -e "scrcpy ended" -e "Step start: finishTasks" | head -2 | tail -1 | grep -qF finishTasks'
+check "  ...run once (not again on exit)" eval '[[ $(run_log | grep -c "Step start: executeTasks") == 2 ]]'
+check "no other phone setting changed" eval '! grep -E "settings (put|delete)" $FAKE/adb.log | grep -v enable_freeform_support | grep -q . && ! grep -q setprop $FAKE/adb.log'
+
+print "== floating windows already on: left on"
+print 'HHH6666 global enable_freeform_support=1' > $C/settings
+print 'DeX headless (experimental)\nContinue' > $C/answers
+run_app $C
+check "setting not touched" eval '! file_has events "enable_freeform_support" && setting_is 1'
+check "phone UI restarted" file_has events "systemui restarted (HHH6666)"
+check "no tasks left" no_tasks
+rm -f $C/settings
+
+print "== Go back, then the phone screen"
+print 'DeX headless (experimental)\nGo back\nPhone screen' > $C/answers
+run_app $C
+check "asked again after Go back" eval '[[ $(grep -c "ask: What do you want to mirror?" $FAKE/events) == 2 ]]'
+check "phone screen mirrored" file_has scrcpy_args "--max-size=1600"
+check "nothing done to the phone" eval '! file_has events "settings " && ! file_has events "systemui" && ! file_has events "windowing mode" && no_tasks'
+
+print "== headless over USB, cable pulled during the session: cleanup over Wi-Fi"
+print 'usbH|HHH6666|Galaxy S25||10.0.0.11|5555' > $C/usb
+print '10.0.0.11|HHH6666|Galaxy S25||10.0.0.11' > $C/net
+print ": > $C/usb" > $C/on_scrcpy
+print 'DeX headless (experimental)\nContinue' > $C/answers
+run_app $C
+check "connected over USB" logged_line "Connection: Galaxy S25 — USB (usbH)"
+check "cleanup reached the phone over Wi-Fi" eval 'grep -qF "adb connect 10.0.0.11:5555" $FAKE/adb.log && file_has events "systemui restarted (HHH6666)"'
+check "setting put back, no tasks left" eval 'setting_is "" && no_tasks'
+check "no alert" no_file $C/alert
+
+print "== headless, phone unreachable when the session ends: alert, tasks kept"
+print 'usbH|HHH6666|Galaxy S25||10.0.0.11|5555' > $C/usb
+print ": > $C/usb; : > $C/net" > $C/on_scrcpy
+print 'DeX headless (experimental)\nContinue' > $C/answers
+run_app $C
+check "told the user to reconnect and run again" file_has alert "open PhoneConnect again"
+check "tasks kept" eval 'file_has tasks.xml "action=\"restart-systemui\"" && file_has tasks.xml "key=\"enable_freeform_support\" value=\"\""'
+check "setting still on" setting_is 1
+rm -f $C/on_scrcpy
+
+print "== next run, two phones saved, the phone back on Wi-Fi: tasks done before the chooser"
+print '10.0.0.11|HHH6666|Galaxy S25||10.0.0.11\n10.0.0.12|JJJ7777|Pixel 9||10.0.0.12' > $C/net
+xml '  <phone id="HHH6666" name="Galaxy S25" eth="" wifi="10.0.0.11"/>' '  <phone id="JJJ7777" name="Pixel 9" eth="" wifi="10.0.0.12"/>' > $C/phones.xml
+print 'Pixel 9' > $C/choice
+run_app $C
+check "cleanup ran before the phone chooser" eval 'run_log | grep -n -e "Step end: executeTasks" -e "Status: Choose a phone" | head -1 | grep -qF executeTasks'
+check "UI restarted, setting put back, no tasks left" eval 'file_has events "systemui restarted (HHH6666)" && setting_is "" && no_tasks'
+check "then connected to the chosen phone" logged_line "Connection: Pixel 9 — Wi-Fi (10.0.0.12:5555)"
+rm -f $C/choice $C/phones.xml
+: > $C/net
+
+print "== Cancel in the status window during a headless session: cleanup on exit"
+print 'usbH|HHH6666|Galaxy S25||10.0.0.11|5555' > $C/usb
+print ": > \"\$(<$C/status_file).cancel\"; zmodload zsh/zselect; zselect -t 300" > $C/on_scrcpy
+print 'DeX headless (experimental)\nContinue' > $C/answers
+run_app $C
+check "stopped by Cancel" logged_line "Cancel pressed in the status window — stopping"
+check "UI restarted, setting put back, no tasks left" eval 'file_has events "systemui restarted (HHH6666)" && setting_is "" && no_tasks'
+rm -f $C/on_scrcpy
+
 print "== Samsung, One UI 7: not offered"
 export FAKE_ONEUI=70000
 run_app $C
@@ -207,6 +275,7 @@ export FAKE_ONEUI=80000 FAKE_DEX_DISPLAY=2
 run_app $C
 check "real DeX offered" asked_buttons "Phone screen|DeX"
 check "  ...headless not offered" eval '! file_has events "headless"'
+check "nothing done to the phone" eval '! file_has events "settings " && ! file_has events "systemui" && ! file_has events "windowing mode" && no_tasks'
 unset FAKE_DEX_DISPLAY FAKE_ONEUI
 print "== other phone, Android 16"
 export FAKE_MAKER=Google FAKE_SDK=36

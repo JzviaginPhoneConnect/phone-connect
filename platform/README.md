@@ -11,7 +11,7 @@ comes out on stdout, success or failure is the exit code.
 
 | Script | Arguments → result | macOS | Windows |
 |---|---|---|---|
-| `env.sh` (sourced) | sets `TOOLS_DIR ADB SCRCPY SCRCPY_SERVER_PATH PHONES_FILE OLD_IPS_FILE LOG_FILE TMPDIR OS_INFO`, `PATH` | bundle paths, `~/.phoneconnect_phones.xml`, `/tmp/PhoneConnect.log` | `{app}\tools`, `%APPDATA%\PhoneConnect\phones.xml`, `%TEMP%\PhoneConnect.log` |
+| `env.sh` (sourced) | sets `TOOLS_DIR ADB SCRCPY SCRCPY_SERVER_PATH PHONES_FILE TASKS_FILE OLD_IPS_FILE LOG_FILE TMPDIR OS_INFO`, `PATH` | bundle paths, `~/.phoneconnect_phones.xml`, `~/.phoneconnect_tasks.xml`, `/tmp/PhoneConnect.log` | `{app}\tools`, `%APPDATA%\PhoneConnect\phones.xml`, `tasks.xml`, `%TEMP%\PhoneConnect.log` |
 | `unquarantine.sh` | — | `xattr -dr com.apple.quarantine` on the bundle | `Unblock-File` on the app folder, once per version |
 | `ask_question.sh` | `text button1 button2` → the button, empty = Cancel | `osascript display dialog` | WinForms dialog |
 | `choose_item.sh` | `prompt default item…` → the item, empty = Cancel | `osascript choose from list` | WinForms list |
