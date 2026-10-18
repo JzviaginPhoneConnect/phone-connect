@@ -17,6 +17,11 @@ PhoneConnect is a ready-to-use app around [scrcpy](https://github.com/Genymobile
 - **Real keyboard:** typing uses the phone's own keyboard layouts, so other languages work.
 - **Shows what it's doing** in a small window while it connects, and retries by itself if the picture doesn't come up.
 
+<p align="center">
+  <img src="assets/screenshots/dex.png" height="360" alt="PhoneConnect on a Mac, mirroring a Samsung DeX desktop in a window">
+  <img src="assets/screenshots/phone.png" height="360" alt="PhoneConnect mirroring an Android phone's screen">
+</p>
+
 ## Download
 
 The newest version is on the [Releases page](../../releases/latest). Older versions stay available there too.
