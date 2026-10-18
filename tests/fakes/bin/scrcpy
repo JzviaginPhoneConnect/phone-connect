@@ -8,6 +8,7 @@ esac
 print -r -- "$*" > $FAKE/scrcpy_args
 # its CPU priority (nice level), where ps can report it
 n=$(ps -o nice= -p $$ 2>/dev/null) && print -r -- "${n// /}" > $FAKE/scrcpy_nice
+[[ " $* " == *" --new-display="* ]] && print "[server] INFO: New display: 1920x1080/160 (id=7)"
 print "INFO: Texture: 1080x2340"
 zmodload zsh/zselect; zselect -t 30     # stay up for 0.3 s
 # $FAKE/on_scrcpy: something that happens during the session (e.g. the phone goes away)

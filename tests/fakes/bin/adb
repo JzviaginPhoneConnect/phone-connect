@@ -49,6 +49,8 @@ case $1 in
                         print -r -- "settings put $3 $4 $5 ($id)" >> $F/events ;;
       "settings delete "*) { grep -vF "$id $3 $4=" $F/settings 2>/dev/null; } > $F/s.tmp; mv $F/s.tmp $F/settings
                         print -r -- "settings delete $3 $4 ($id)" >> $F/events ;;
+      "cmd window set-display-windowing-mode -d "*) print -r -- "display $5 windowing mode $6" >> $F/events ;;
+      "cmd window get-display-windowing-mode -d "*) print -r -- "display windowing mode=freeform for displayId=$5" ;;
       "pidof com.android.systemui") print -r -- "$(<$F/sysui_pid.$id 2>/dev/null || print 1000)" ;;
       "am crash com.android.systemui")
         p=$(<$F/sysui_pid.$id 2>/dev/null || print 1000); print -r -- $(( p + 1 )) > $F/sysui_pid.$id

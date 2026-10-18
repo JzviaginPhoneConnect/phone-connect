@@ -973,6 +973,25 @@ askAudio() {
   return 0
 }
 
+# useFloatingWindows <scrcpy output file>: open apps on the headless display in
+# resizable windows. Only that display is switched (its id is in scrcpy's "New display:
+# … (id=N)" line); it's gone, setting and all, when scrcpy ends.
+useFloatingWindows() {
+  local id t
+  for t in {1..10}; do      # on Windows scrcpy's output can arrive a little late
+    id=$(grep -o 'New display: .*(id=[0-9]*)' "$1" 2>/dev/null | tail -1 | grep -o 'id=[0-9]*' | cut -d= -f2)
+    [[ -n "$id" ]] && break
+    zselect -t 20
+  done
+  if [[ -z "$id" ]]; then
+    echo "Couldn't find the headless display's id — apps open full screen"
+    return 1
+  fi
+  withTimeout 8 adb -s "$SERIAL" shell cmd window set-display-windowing-mode -d "$id" 5 >/dev/null 2>&1
+  echo "Headless display $id: $(phoneProp "$SERIAL" cmd window get-display-windowing-mode -d "$id")"
+  return 0
+}
+
 # waitForPicture <job pid> <output file>: up to 15 s for the first frame; fails if
 # none came or scrcpy ended
 waitForPicture() {
@@ -1022,6 +1041,7 @@ runScrcpyWithRetries() {
     SCRCPY_JOB=$pid
     if step waitForPicture $pid "$out"; then
       echo "Picture is up"
+      [[ "$TARGET" == virtual ]] && step useFloatingWindows "$out"
       showStatus --done
       platform bring_to_front $pid
       wait $pid; rc=$?

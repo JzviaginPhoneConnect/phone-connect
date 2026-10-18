@@ -82,8 +82,12 @@ end user installs nothing and never opens a terminal.
     displays or Miracast ones (device flag 0x4000000, WifiDisplayAdapter); a virtual
     display is always type 5 without it, whatever flags scrcpy passes.
   - The **only** things the app does to the phone: turn on `global enable_freeform_support`
-    (floating windows) for the session if it's off, and afterwards put it back and restart
-    SystemUI. Nothing else, and **never anything left running on the phone** (no
+    (floating windows) for the session if it's off, switch the headless display (id from
+    scrcpy's "New display: … (id=N)" line) to freeform with `cmd window
+    set-display-windowing-mode -d N 5` (dies with the display; without it apps open full
+    screen even with freeform support on), and afterwards put the setting back and restart
+    SystemUI. Windows get Samsung's pop-up view handle (menu: maximise, minimise, close,
+    pin), not the DeX title bar: that's only on real DeX displays. Nothing else, and **never anything left running on the phone** (no
     background loops/watchers; the user rejected that outright).
   - Undo goes through the **task file** (`TASKS_FILE`: `~/.phoneconnect_tasks.xml` on Mac,
     `%APPDATA%\PhoneConnect\tasks.xml` on Windows; `<task phone action [namespace key value]/>`,

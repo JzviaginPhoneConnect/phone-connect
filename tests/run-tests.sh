@@ -201,6 +201,7 @@ check "warned, with Go back as an option" eval 'file_has events "ask: DeX headle
 check "scrcpy got a new display, not a display id" eval 'file_has scrcpy_args "--new-display=1920x1080/160 --video-bit-rate=8M --window-title=PhoneConnect — Galaxy S25, DeX headless (USB)" && ! file_has scrcpy_args "--display-id"'
 check "floating windows turned on before scrcpy started" eval 'run_log | grep -n -e "Floating windows turned on" -e "Starting (attempt 1)" | head -1 | grep -qF "Floating windows"'
 check "...and off again afterwards (it wasn't set before)" eval 'file_has events "settings delete global enable_freeform_support (HHH6666)" && setting_is ""'
+check "headless display switched to floating windows" file_has events "display 7 windowing mode 5"
 check "phone UI restarted" file_has events "systemui restarted (HHH6666)"
 check "no tasks left" no_tasks
 check "cleanup is a step in main, after scrcpy ended" eval 'run_log | grep -e "scrcpy ended" -e "Step start: finishTasks" | head -2 | tail -1 | grep -qF finishTasks'
@@ -221,7 +222,7 @@ print 'DeX headless (experimental)\nGo back\nPhone screen' > $C/answers
 run_app $C
 check "asked again after Go back" eval '[[ $(grep -c "ask: What do you want to mirror?" $FAKE/events) == 2 ]]'
 check "phone screen mirrored" file_has scrcpy_args "--max-size=1600"
-check "nothing done to the phone" eval '! file_has events "settings " && ! file_has events "systemui" && no_tasks'
+check "nothing done to the phone" eval '! file_has events "settings " && ! file_has events "systemui" && ! file_has events "windowing mode" && no_tasks'
 
 print "== headless over USB, cable pulled during the session: cleanup over Wi-Fi"
 print 'usbH|HHH6666|Galaxy S25||10.0.0.11|5555' > $C/usb
@@ -274,7 +275,7 @@ export FAKE_ONEUI=80000 FAKE_DEX_DISPLAY=2
 run_app $C
 check "real DeX offered" asked_buttons "Phone screen|DeX"
 check "  ...headless not offered" eval '! file_has events "headless"'
-check "nothing done to the phone" eval '! file_has events "settings " && ! file_has events "systemui" && no_tasks'
+check "nothing done to the phone" eval '! file_has events "settings " && ! file_has events "systemui" && ! file_has events "windowing mode" && no_tasks'
 unset FAKE_DEX_DISPLAY FAKE_ONEUI
 print "== other phone, Android 16"
 export FAKE_MAKER=Google FAKE_SDK=36
