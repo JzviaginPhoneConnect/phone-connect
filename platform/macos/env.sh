@@ -17,6 +17,7 @@ export SCRCPY_SERVER_PATH="$TOOLS_DIR/scrcpy-server"  # the part that runs on th
 export SCRCPY="$TOOLS_DIR/PhoneConnect Mirror.app/Contents/MacOS/scrcpy"
 
 PHONES_FILE="$HOME/.phoneconnect_phones.xml"
+TASKS_FILE="$HOME/.phoneconnect_tasks.xml"   # things still to do on phones
 OLD_IPS_FILE="$HOME/.phoneconnect_ips"    # older versions: lines "eth <ip>" and "wifi <ip>"
 [[ ! -e "$OLD_IPS_FILE" && -e "$HOME/.phone_ips" ]] && mv "$HOME/.phone_ips" "$OLD_IPS_FILE"   # from the old "Phone" app
 LOG_FILE=/tmp/PhoneConnect.log

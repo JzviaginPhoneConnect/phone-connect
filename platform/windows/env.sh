@@ -18,6 +18,7 @@ export PC_APP_DIR="$(cygpath -w "$APP_DIR")"    # for the dialogs' window icon (
 DATA_DIR="$(cygpath -u "$APPDATA")/PhoneConnect"
 mkdir -p "$DATA_DIR"
 PHONES_FILE="$DATA_DIR/phones.xml"
+TASKS_FILE="$DATA_DIR/tasks.xml"    # things still to do on phones
 OLD_IPS_FILE="$DATA_DIR/ips.txt"    # older versions: lines "eth <ip>" and "wifi <ip>"
 export TMPDIR="$(cygpath -u "$TEMP")"
 export TMPPREFIX="$TMPDIR/zsh"     # zsh's own temporary files (here-documents)
