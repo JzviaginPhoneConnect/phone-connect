@@ -71,16 +71,18 @@ powershell -ExecutionPolicy Bypass -File build\build-windows.ps1
 
 Versions look like **x.y.z**, for example 1.4.2. Every release is tagged `vX.Y.Z` and kept on the [Releases page](../../releases), which is the full version history, with the list of changes in each one.
 
+Releases are made by the project's maintainers (people with write access to this repository); merging, pushing to `main` and running the release workflow all need that access. Anyone else can contribute through a pull request from a fork: it gets built and checked, and a maintainer decides whether to merge it.
+
 **How a change gets released:**
 1. **Open a pull request into `main`.** GitHub builds the Mac and Windows apps for it. If either build fails, the pull request can't be merged (once the rule below is on).
 2. **Choose the version in the pull request form.** By default the **last** number goes up (1.2.3 → 1.2.4). To bump the **middle** number (1.3.0) or the **first** number (2.0.0) instead, tick the matching box under *Version*. A comment on the pull request always shows which version merging it will create, and it updates when you change the boxes.
-3. **Merge it.** GitHub works out the version, builds it, tags the commit `vX.Y.Z` and publishes the release. The tag is only created once both builds succeed.
+3. **A maintainer merges it.** GitHub works out the version, builds it, tags the commit `vX.Y.Z` and publishes the release. The tag is only created once both builds succeed.
 
 **Landing a change without releasing it.** Tick **Don't release this change** at the top of the pull request form, or add the label `no-release`. When you merge, `main` is updated and built, but no version is made. The change is included in the next release. For a direct push, put `[no release]` in the commit message.
 
-**Pushing straight to `main`.** As the repository's owner, you can still push directly. The rule below lets admins skip the pull request. Your push is built and released like a merged pull request, unless the commit message says `[no release]`. Choose the version the same way, with `[minor]` or `[major]`. Pushes go out without the pull request build check, though, so use a pull request when you want the check first.
+**Pushing straight to `main`** (maintainers only). Admins can push directly; the rule below lets them skip the pull request. Such a push is built and released like a merged pull request, unless the commit message says `[no release]`. Choose the version the same way, with `[minor]` or `[major]`. Pushes go out without the pull request build check, though, so use a pull request when you want the check first.
 
-Instead of ticking a version box, you can add the label `release:minor` or `release:major` to the pull request. To make a release by hand, use **Actions → Build → Run workflow** and choose which number to bump.
+Instead of ticking a version box, you can add the label `release:minor` or `release:major` to the pull request. Maintainers can also make a release by hand: **Actions → Build → Run workflow** and choose which number to bump.
 
 The version is built into everything:
 - **Mac:** the app's version in Finder's *Get Info*, the dialog titles, the log, and the installer window's name.
@@ -88,7 +90,7 @@ The version is built into everything:
 
 The download links at the top always point to the newest release.
 
-**Turning on the merge check (once).** GitHub only enforces this if you add the rule. Go to **Settings → Rules → Rulesets → New ruleset → Import a ruleset** and choose `.github/rulesets/main.json`. The rule makes every change go through a pull request whose **Build macOS** and **Build Windows** checks pass, while still letting the repository's admins (you) push straight to `main`. With the [GitHub CLI](https://cli.github.com), you can do it in one line instead:
+**Turning on the merge check** (once, by a repository admin). GitHub only enforces this if the rule is added. Go to **Settings → Rules → Rulesets → New ruleset → Import a ruleset** and choose `.github/rulesets/main.json`. The rule makes every change go through a pull request whose **Build macOS** and **Build Windows** checks pass, while still letting the repository's admins (you) push straight to `main`. With the [GitHub CLI](https://cli.github.com), you can do it in one line instead:
 ```
 gh api -X POST repos/JzviaginPhoneConnect/phone-connect/rulesets --input .github/rulesets/main.json
 ```
