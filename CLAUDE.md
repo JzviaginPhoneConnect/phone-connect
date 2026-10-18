@@ -71,6 +71,12 @@ end user installs nothing and never opens a terminal.
 - Works with **any Android phone** that has USB debugging on (Android 11+ for audio).
 - **Samsung DeX:** when a Samsung phone is docked and DeX is running, the app finds the
   DeX display and offers to mirror it instead of the phone screen.
+- **Headless DeX / desktop mode (experimental):** with no external display, a phone on
+  One UI 8+ (Samsung, `ro.build.version.oneui` >= 80000) or Android 16+ (others, SDK >= 36)
+  is offered "DeX headless (experimental)" / "Desktop mode headless (experimental)":
+  scrcpy `--new-display=1920x1080/160` and the phone renders its desktop there. The app
+  only reads the version; it **never changes phone settings or developer options** for this
+  (the user asked). Without its developer flag a non-Samsung phone may show only a launcher.
 - While a phone is in a USB-C dock, the phone is the USB host, so the computer can't
   reach it over USB through the dock, only over the network (the dock's Ethernet or
   Wi-Fi). A dock without a monitor needs an HDMI dummy plug for DeX to start.
@@ -129,7 +135,7 @@ shortcut, and macOS's own Ctrl+Space must be turned off), `--video-codec=h265`, 
 `--video-codec-options=bitrate-mode:int=1` (VBR: the bit rate is an average, peaks allowed;
 seemed a bit smoother when scrolling; Samsung ignores `repeat-previous-frame-after`, so the
 stream is 0 fps when the screen is still),
-`--max-size=1600` and 6M bitrate for the phone screen, 8M for DeX. Audio is asked
+`--max-size=1600` and 6M bitrate for the phone screen, 8M for DeX (real or headless). Audio is asked
 each launch. DeX = any display id other than 0 (asks DeX vs phone screen).
 
 Things tried and **rejected**:

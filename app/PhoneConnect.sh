@@ -5,6 +5,8 @@
 # (one set per OS, same names; see platform/README.md), never by checks in here.
 # Remembers several phones; asks which one to use when more than one is known.
 # Asks whether to use DeX (if a DeX display exists) and whether to forward audio.
+# Without one, on One UI 8+ / Android 16+ it offers a headless DeX / desktop mode on a
+# display scrcpy creates (experimental; nothing on the phone is changed for it).
 # Connects over USB, Ethernet (dock) or Wi-Fi, in that order of preference.
 # Any extra arguments are passed straight to scrcpy, e.g.:  PhoneConnect --print-fps
 #
@@ -47,7 +49,8 @@ LINK=""                               # USB, Ethernet, Wi-Fi or Wireless debuggi
 PHONE_NAME=""                         # the chosen phone's name, for messages and the title
 LEARNED_ID="" LEARNED_NAME="" LEARNED_ETH=""   # set by learnPhone
 DEX_ID=""                             # id of the DeX display, if there is one
-TARGET="phone"                        # phone or dex
+VIRTUAL_DESKTOP=""                    # label of the headless desktop option, if the phone supports it
+TARGET="phone"                        # phone, dex or virtual (headless desktop)
 AUDIO=() AUDIO_CHOICE=""              # scrcpy's audio option, and the answer given
 SCRCPY_JOB=""                         # background job running scrcpy
 STATUS_WATCHER=""                     # background loop for the status window
@@ -693,14 +696,41 @@ findDexDisplay() {
   return 0
 }
 
-# DeX or the phone screen? (asked only when there's a DeX display) -> TARGET
+# Without a DeX display: can the phone run its desktop headless, on a display scrcpy
+# creates (--new-display)? Samsung renders DeX there from One UI 8, other phones their
+# desktop mode from Android 16. Only reads the phone's version; changes no settings.
+# -> VIRTUAL_DESKTOP (the option's label, empty if not supported)
+checkVirtualDesktop() {
+  local maker oneui sdk
+  VIRTUAL_DESKTOP=""
+  [[ -n "$DEX_ID" ]] && return 0
+  maker=$(phoneProp "$SERIAL" getprop ro.product.manufacturer)
+  if [[ "${(L)maker}" == samsung ]]; then
+    oneui=$(phoneProp "$SERIAL" getprop ro.build.version.oneui)
+    [[ "$oneui" == <-> ]] && (( oneui >= 80000 )) && VIRTUAL_DESKTOP="DeX headless (experimental)"
+    echo "Samsung, One UI ${oneui:-unknown}: headless DeX ${${VIRTUAL_DESKTOP:+supported}:-not supported}"
+  else
+    sdk=$(phoneProp "$SERIAL" getprop ro.build.version.sdk)
+    [[ "$sdk" == <-> ]] && (( sdk >= 36 )) && VIRTUAL_DESKTOP="Desktop mode headless (experimental)"
+    echo "${maker:-Unknown maker}, Android SDK ${sdk:-unknown}: headless desktop mode ${${VIRTUAL_DESKTOP:+supported}:-not supported}"
+  fi
+  return 0
+}
+
+# DeX or the phone screen? Asked when there's a DeX display, or else when the phone
+# can run its desktop headless. -> TARGET
 askMirrorTarget() {
   local choice
   TARGET="phone"
-  [[ -n "$DEX_ID" ]] || return 0
-  choice=$(askQuestion "A DeX display is connected. What do you want to mirror?" "Phone screen" "DeX")
-  [[ -z "$choice" ]] && return 2   # Cancel
-  [[ "$choice" == "DeX" ]] && TARGET="dex"
+  if [[ -n "$DEX_ID" ]]; then
+    choice=$(askQuestion "A DeX display is connected. What do you want to mirror?" "Phone screen" "DeX")
+    [[ -z "$choice" ]] && return 2   # Cancel
+    [[ "$choice" == "DeX" ]] && TARGET="dex"
+  elif [[ -n "$VIRTUAL_DESKTOP" ]]; then
+    choice=$(askQuestion "What do you want to mirror?" "Phone screen" "$VIRTUAL_DESKTOP")
+    [[ -z "$choice" ]] && return 2   # Cancel
+    [[ "$choice" == "$VIRTUAL_DESKTOP" ]] && TARGET="virtual"
+  fi
   return 0
 }
 
@@ -745,6 +775,12 @@ runScrcpyWithRetries() {
     echo "Mirroring DeX (display $DEX_ID), audio: $AUDIO_CHOICE"
     args=("${common[@]}" --display-id="$DEX_ID" --video-bit-rate=8M
           --window-title="PhoneConnect — $PHONE_NAME, DeX ($LINK)" "$@")
+  elif [[ "$TARGET" == "virtual" ]]; then
+    # a new display only for this session (gone when scrcpy ends); the phone runs its
+    # desktop on it
+    echo "Mirroring ${VIRTUAL_DESKTOP}, audio: $AUDIO_CHOICE"
+    args=("${common[@]}" --new-display=1920x1080/160 --video-bit-rate=8M
+          --window-title="PhoneConnect — $PHONE_NAME, ${VIRTUAL_DESKTOP% \(experimental\)} ($LINK)" "$@")
   else
     echo "Mirroring phone screen, audio: $AUDIO_CHOICE"
     args=("${common[@]}" --max-size=1600 --video-bit-rate=6M
@@ -806,6 +842,7 @@ main() {
   step displayDeviceChoiceDialog || exit 0      # 2 = cancelled
   step connectToChosenDevice     || exit 1
   step findDexDisplay
+  step checkVirtualDesktop
   step askMirrorTarget           || exit 0      # cancelled
   step askAudio                  || exit 0      # cancelled
   step runScrcpyWithRetries "$@"
