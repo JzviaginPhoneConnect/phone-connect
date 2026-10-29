@@ -11,7 +11,10 @@ S=""; [[ $1 == -s ]] && { S=$2; shift 2; }
 row() { if [[ $1 == *:* ]]; then grep "^${1%:*}|" $F/net; else grep "^$1|" $F/usb; fi }
 case $1 in
   start-server)
-    # FAKE_HANG_START: hang like a stuck adb server, deaf to TERM
+    # FAKE_HANG_START: hang like a stuck adb server, deaf to TERM; =native: only with
+    # adb's own USB code (not with ADB_LIBUSB=1 or ADB_USB=0)
+    print -r -- "start-server LIBUSB=$ADB_LIBUSB USB=$ADB_USB" >> $F/events
+    [[ $FAKE_HANG_START == native && ( -n $ADB_LIBUSB || $ADB_USB == 0 ) ]] && exit 0
     [[ -n $FAKE_HANG_START ]] && { trap '' TERM; print $$ > $F/hung_adb; zmodload zsh/zselect; while :; do zselect -t 100; done } ;;
   devices)
     print "List of devices attached"

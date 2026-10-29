@@ -25,11 +25,11 @@ end user installs nothing and never opens a terminal.
   `env.sh` and runs the rest as `zsh -f platform/<name>.sh …` (logged):
   `env.sh` (paths, tools, files, `OS_INFO`), `unquarantine`, `ask_question`,
   `choose_item`, `show_alert`, `run_with_timeout`, `port_open`, `run_scrcpy`,
-  `picture_up`, `stop_scrcpy`, `stop_previous`, `bring_to_front`, `status_window`.
+  `picture_up`, `stop_scrcpy`, `stop_previous`, `stop_tree`, `bring_to_front`, `status_window`.
 - Opening the app again stops the previous run if it's still going (`stopPreviousRun`:
   pid in `$TMPDIR/PhoneConnect.pid`; TERM to its process tree so it cleans up, after 5 s
-  kill whatever is left). That's the way out when a run hangs, e.g. `adb start-server` stuck
-  in macOS's USB code (`IOServiceOpen`). The tests use their own TMPDIR for this reason.
+  kill whatever is left). The way out when a run hangs. The tests use their own TMPDIR for
+  this reason.
 - Script structure: helpers first, then one function per step, `main` at the bottom
   runs them in order, each through `step` (logs `Step start: X` / `Step end: X (N ms,
   exit R)`; steps can nest). Steps hand results over in the global variables listed at
@@ -221,6 +221,12 @@ Dialogs start with `activate` so they come to the front.
   incl. scrcpy's build scripts is in the sources release, so relinking is possible).
 
 ## Gotchas already hit
+
+- adb's own macOS USB code can hang for good while its server starts (a USB-C dock here:
+  stuck in `IOServiceOpen` on one of the dock's devices, no phone on USB), and
+  `adb start-server` waits forever. `startAdbServer` gives each try 10 s, then retries with
+  `ADB_LIBUSB=1` (still sees USB phones), then `ADB_USB=0` (network only), else an alert.
+  Both worked on that Mac. A server started that way keeps running for later runs.
 
 - zsh's `BG_NICE` (on by default) runs every `&` job at nice 5. scrcpy is started with `&`
   (for the watchdog), so it ran at lowered priority and mirroring stuttered on the Mac,
