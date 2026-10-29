@@ -113,6 +113,14 @@ for arch in aarch64 x86_64; do
 </plist>
 EOF
   chmod 755 "$mirror/MacOS/scrcpy" "$tools/adb"
+  # macOS 27.2+ judges local network access by the program's own signature: Google's
+  # "adb" can't ask for it and is silently blocked ("No route to host" over Wi-Fi or
+  # Ethernet). Signed as PhoneConnect, it uses PhoneConnect's Local Network permission.
+  if command -v codesign >/dev/null; then
+    codesign -f -s - --identifier io.github.phoneconnect "$tools/adb"
+  else
+    echo "Note: no codesign (not a Mac), so adb keeps its own signature in this build" >&2
+  fi
   rm -rf "$tmp"
 done
 

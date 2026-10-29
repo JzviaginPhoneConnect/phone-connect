@@ -222,6 +222,16 @@ Dialogs start with `activate` so they come to the front.
 
 ## Gotchas already hit
 
+- macOS 27.2 (installed 2026-10-29; Wi-Fi worked before it): Local Network access is judged
+  by the program's own signing identifier, not the app that started it. The bundled adb
+  (Google-signed, identifier `adb`, no bundle) can't show a prompt and is silently denied:
+  `adb connect` → "No route to host" while `nc` (Apple, exempt) reaches the port. System
+  log: `LocalNetwork: found bundle id adb by PID`, `reason: NECP`. Allowing PhoneConnect in
+  Settings didn't help; ad-hoc signing with another identifier (`adb`) didn't either. The
+  build re-signs adb ad hoc with identifier `io.github.phoneconnect`, so it uses
+  PhoneConnect's permission (user must allow PhoneConnect under Local Network; whether
+  macOS prompts on its own for a fresh install is untested).
+
 - adb's own macOS USB code can hang for good while its server starts (a USB-C dock here:
   stuck in `IOServiceOpen` on one of the dock's devices, no phone on USB), and
   `adb start-server` waits forever. `startAdbServer` gives each try 10 s, then retries with
