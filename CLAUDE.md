@@ -11,8 +11,12 @@ scrcpy release builds, pinned and checksum-verified in `build/versions.env`), so
 end user installs nothing and never opens a terminal.
 
 - `app/PhoneConnect.sh` — **the app, one zsh script for both OSes, identical on each,
-  with no platform checks.** Mac: it's the bundle's main executable
-  (`PhoneConnect.app/Contents/MacOS/PhoneConnect`). Windows: `windows/Launcher.cs` →
+  with no platform checks.** Mac: `PhoneConnect.app/Contents/MacOS/PhoneConnect.sh`; the
+  bundle's executable `PhoneConnect` is `macos/Launcher.sh`, which `open -n`s the inner
+  `Contents/Resources/PhoneConnect Run.app` (`macos/Run.sh` → execs the script) and exits.
+  Needed because macOS only activates an app that's already running instead of starting it
+  again, and a script started straight from the launcher is killed (TERM) by launchd when the
+  launcher exits, even in its own session. Windows: `windows/Launcher.cs` →
   `PhoneConnect.exe` (icon) starts it hidden with the bundled MSYS2 zsh
   (`{app}\shell\usr\bin\zsh.exe -f PhoneConnect.sh`, env `LANG=C.UTF-8`,
   `MSYS2_ARG_CONV_EXCL=*`). `windows/installer.iss` → Inno Setup installer.
@@ -21,7 +25,11 @@ end user installs nothing and never opens a terminal.
   `env.sh` and runs the rest as `zsh -f platform/<name>.sh …` (logged):
   `env.sh` (paths, tools, files, `OS_INFO`), `unquarantine`, `ask_question`,
   `choose_item`, `show_alert`, `run_with_timeout`, `port_open`, `run_scrcpy`,
-  `picture_up`, `stop_scrcpy`, `bring_to_front`, `status_window`.
+  `picture_up`, `stop_scrcpy`, `stop_previous`, `bring_to_front`, `status_window`.
+- Opening the app again stops the previous run if it's still going (`stopPreviousRun`:
+  pid in `$TMPDIR/PhoneConnect.pid`; TERM to its process tree so it cleans up, after 5 s
+  kill whatever is left). That's the way out when a run hangs, e.g. `adb start-server` stuck
+  in macOS's USB code (`IOServiceOpen`). The tests use their own TMPDIR for this reason.
 - Script structure: helpers first, then one function per step, `main` at the bottom
   runs them in order, each through `step` (logs `Step start: X` / `Step end: X (N ms,
   exit R)`; steps can nest). Steps hand results over in the global variables listed at

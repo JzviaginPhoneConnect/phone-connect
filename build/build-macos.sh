@@ -118,11 +118,34 @@ done
 
 # ---- the app itself ----
 # the shared script (the same file as on Windows) plus the macOS platform scripts
-sed "s/@VERSION@/$VERSION/g" "$ROOT/app/PhoneConnect.sh" > "$APP/Contents/MacOS/PhoneConnect"
-chmod 755 "$APP/Contents/MacOS/PhoneConnect"
+sed "s/@VERSION@/$VERSION/g" "$ROOT/app/PhoneConnect.sh" > "$APP/Contents/MacOS/PhoneConnect.sh"
 mkdir -p "$APP/Contents/MacOS/platform"
 cp "$ROOT"/platform/macos/*.sh "$APP/Contents/MacOS/platform/"
 cp "$ROOT/assets/PhoneConnect.icns" "$APP/Contents/Resources/PhoneConnect.icns"
+# the launcher (the app's executable) starts the script as a new instance of a small
+# inner app each time, so opening PhoneConnect again starts a new run (macos/Launcher.sh)
+cp "$ROOT/macos/Launcher.sh" "$APP/Contents/MacOS/PhoneConnect"
+run_app="$APP/Contents/Resources/PhoneConnect Run.app/Contents"
+mkdir -p "$run_app/MacOS"
+cp "$ROOT/macos/Run.sh" "$run_app/MacOS/PhoneConnect"
+chmod 755 "$APP/Contents/MacOS/PhoneConnect" "$APP/Contents/MacOS/PhoneConnect.sh" "$run_app/MacOS/PhoneConnect"
+cat > "$run_app/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>PhoneConnect</string>
+  <key>CFBundleDisplayName</key><string>PhoneConnect</string>
+  <key>CFBundleIdentifier</key><string>io.github.phoneconnect.run</string>
+  <key>CFBundleExecutable</key><string>PhoneConnect</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>$NUMERIC_VERSION</string>
+  <key>CFBundleVersion</key><string>$NUMERIC_VERSION</string>
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>LSUIElement</key><true/>
+</dict>
+</plist>
+EOF
 
 # ---- the status window (what's happening, until the picture appears): a small Swift
 # app, one file for Apple Silicon and Intel, with PhoneConnect's name and icon ----

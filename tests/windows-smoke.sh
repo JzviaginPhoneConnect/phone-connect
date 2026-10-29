@@ -81,6 +81,24 @@ zselect -t 2200                                   # the alive file stops being r
 check "closes once PhoneConnect is gone (alive file stale)" eval '! status_running'
 rm -f $sf $sf.alive $sf.cancel
 
+print "== stop_previous (an earlier run, hanging in a Windows program)"
+fakeapp=$TMPDIR/PhoneConnect-smoke.sh
+print -r -- "\"$SYSDIR/ping.exe\" -n 60 127.0.0.1 >/dev/null" > $fakeapp
+zsh -f $fakeapp &
+prev=$!
+sleep 30 &
+other=$!
+zselect -t 200
+ping_running() { "$SYSDIR/tasklist.exe" /FI "IMAGENAME eq ping.exe" 2>/dev/null | grep -qi ping.exe; }
+check "the Windows program is running" ping_running
+check "leaves a process that isn't PhoneConnect alone" eval '! plat stop_previous $other && kill -0 $other'
+check "stops the earlier run" plat stop_previous $prev
+check "  ...gone" eval '! kill -0 $prev 2>/dev/null'
+check "  ...with the Windows program it started" eval '! ping_running'
+check "nothing to stop once it's gone" eval '! plat stop_previous $prev'
+kill $other 2>/dev/null
+rm -f $fakeapp
+
 print
 print "$PASS passed, $FAIL failed"
 (( FAIL == 0 ))

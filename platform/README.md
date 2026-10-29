@@ -21,6 +21,7 @@ comes out on stdout, success or failure is the exit code.
 | `run_scrcpy.sh` | `scrcpy args…`, runs in the foreground (the app starts it in the background) | through `script` (a pty, so output isn't buffered) | `scrcpy.exe` directly |
 | `picture_up.sh` | `pid output-file` → exit 0 once the picture shows | `Texture` in the output | the scrcpy window exists |
 | `stop_scrcpy.sh` | `pid` | `pkill -P`, `kill` | `taskkill /T /F` |
+| `stop_previous.sh` | `pid` → exit 0 if that was a PhoneConnect run still going; it and everything it started are stopped (TERM, after 5 s kill) | `ps` tree, `kill` | `ps -l` tree, `taskkill /T /F`, `kill` |
 | `status_window.sh` | `status-file` → opens the status window and returns at once | `open -n` the bundle's `PhoneConnect Status.app` (`macos/StatusWindow.swift`) | `PhoneConnect.exe --status` (`windows/Launcher.cs`) |
 | `bring_to_front.sh` | `pid` → exit 0 when scrcpy's window is in front | activate via AppKit, check with `lsappinfo` | nothing (already in front) |
 
