@@ -152,6 +152,7 @@ withTimeout() {
 #   STATUS_FILE.cancel  created by the window's Cancel button; this script then stops
 # =====================================================================
 STATUS_FILE="$TMPDIR/PhoneConnect.$$.status"
+PID_FILE="$TMPDIR/PhoneConnect.pid"       # the latest run's process id (stopPreviousRun)
 
 showStatus() {
   if [[ "$1" == --done ]]; then
@@ -191,6 +192,7 @@ onExit() {
   (( TASKS_ADDED )) && step finishTasks
   showStatus --done
   zf_rm -f "$STATUS_FILE.alive" "$STATUS_FILE.cancel"
+  [[ -e "$PID_FILE" && "$(<"$PID_FILE")" == $$ ]] && zf_rm -f "$PID_FILE"
   # give the window a moment to read "__done__" before the file goes
   zselect -t 50
   zf_rm -f "$STATUS_FILE"
@@ -588,6 +590,25 @@ startStatusWindow() {
   showStatus "Starting…"
   platform status_window "$STATUS_FILE" >/dev/null
   platform unquarantine
+  return 0
+}
+
+# Stop an earlier run that is still going (e.g. stuck on a command that hangs), with
+# everything it started, so opening the app again is always a way out. PID_FILE holds
+# the process id of the latest run.
+stopPreviousRun() {
+  local old
+  [[ -s "$PID_FILE" ]] && old=$(<"$PID_FILE")
+  if [[ "$old" == <-> && "$old" != $$ ]] && platform stop_previous "$old"; then
+    echo "Stopped the previous run (pid $old)"
+    # its status window, if it couldn't close it itself
+    if [[ -e "$TMPDIR/PhoneConnect.$old.status" ]]; then
+      print -r -- "__done__" >> "$TMPDIR/PhoneConnect.$old.status"
+      zselect -t 50
+      zf_rm -f "$TMPDIR/PhoneConnect.$old.status"{,.alive,.cancel}
+    fi
+  fi
+  print -r -- $$ > "$PID_FILE"
   return 0
 }
 
@@ -1076,7 +1097,8 @@ main() {
   echo "PhoneConnect $APP_VERSION starting — $OS_INFO, app: $SCRIPT"
 
   step startStatusWindow
-  step checkTools                || exit 1
+  step stopPreviousRun
+  step checkTools               || exit 1
   step startAdbServer
   step loadSavedDevices
   step dropOfflineConnections

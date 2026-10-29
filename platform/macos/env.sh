@@ -1,5 +1,5 @@
 # PhoneConnect platform layer, macOS: paths and tools (sourced by PhoneConnect.sh).
-# Layout: PhoneConnect.app/Contents/MacOS/{PhoneConnect, platform/}
+# Layout: PhoneConnect.app/Contents/MacOS/{PhoneConnect (launcher), PhoneConnect.sh, platform/}
 #         PhoneConnect.app/Contents/Resources/tools/{arm64,x86_64}/
 
 PLATFORM_DIR=${${(%):-%x}:A:h}

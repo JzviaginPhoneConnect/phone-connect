@@ -10,6 +10,9 @@ print -r -- "adb $*" >> $F/adb.log
 S=""; [[ $1 == -s ]] && { S=$2; shift 2; }
 row() { if [[ $1 == *:* ]]; then grep "^${1%:*}|" $F/net; else grep "^$1|" $F/usb; fi }
 case $1 in
+  start-server)
+    # FAKE_HANG_START: hang like a stuck adb server, deaf to TERM
+    [[ -n $FAKE_HANG_START ]] && { trap '' TERM; print $$ > $F/hung_adb; zmodload zsh/zselect; while :; do zselect -t 100; done } ;;
   devices)
     print "List of devices attached"
     while IFS='|' read -r s rest; do

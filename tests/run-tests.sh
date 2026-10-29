@@ -37,7 +37,9 @@ PHONES_FILE="\$FAKE/phones.xml"
 TASKS_FILE="\$FAKE/tasks.xml"
 OLD_IPS_FILE="\$FAKE/old_ips.txt"
 LOG_FILE="$WORK/test.log"
+export TMPDIR="$WORK/tmp"   # own status and pid files: never touch a real PhoneConnect run
 EOF
+mkdir -p $WORK/tmp
 
 LOG=$WORK/test.log
 zmodload zsh/zselect
@@ -286,6 +288,24 @@ export FAKE_SDK=35
 run_app $C
 check "no mirror question" eval '! file_has events "What do you want to mirror?"'
 unset FAKE_MAKER FAKE_SDK
+
+# ==== reopened while an earlier run hangs ====
+C=$WORK/reopen; mkdir -p $C
+print "== opened again while the previous run hangs: it's stopped, this run goes on"
+print 'usbR|RRR8888|Pixel 7||10.0.0.40|5555' > $C/usb
+export FAKE=$C HOME=$C/home; mkdir -p $HOME
+FAKE_HANG_START=1 zsh -f $APP/PhoneConnect.sh < /dev/null > /dev/null 2>&1 &
+old=$!
+for i in {1..100}; do [[ -s $C/hung_adb ]] && break; zselect -t 10; done
+check "previous run hanging in adb start-server" eval '[[ -s $C/hung_adb ]] && kill -0 $old'
+run_app $C
+check "previous run stopped" eval '! kill -0 $old 2>/dev/null'
+check "  ...and its hung adb (deaf to TERM) too" eval '! kill -0 $(<$C/hung_adb) 2>/dev/null'
+check "logged" logged_line "Stopped the previous run (pid $old)"
+check "this run went on" logged_line "Connection: Pixel 7 — USB (usbR)"
+check "its pid file removed at the end" no_file $WORK/tmp/PhoneConnect.pid
+run_app $C
+check "nothing to stop next time" eval '! logged_line "Stopped the previous run"'
 
 print
 print "$PASS passed, $FAIL failed (log: $LOG)"
