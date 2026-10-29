@@ -627,9 +627,32 @@ checkTools() {
 
 # Start adb's background server on its own, without capturing its output: started
 # by a later captured command, it would inherit that output pipe and hold it open.
+# adb's own USB code can hang for good while the server starts (seen on a Mac with a
+# USB-C dock: stuck opening one of the dock's devices), so each try gets 10 s: first as
+# usual, then with libusb instead, then without USB (phones over the network only). The
+# setting stays exported for this run's adb commands; a server started that way keeps
+# running for later runs too, until the computer restarts or adb kill-server.
 startAdbServer() {
-  "$ADB" start-server >/dev/null 2>&1
-  echo "adb server started"
+  local mode job i
+  for mode in "" ADB_LIBUSB=1 ADB_USB=0; do
+    [[ -n "$mode" ]] && export "$mode"
+    "$ADB" start-server >/dev/null 2>&1 &
+    job=$!
+    for (( i = 0; i < 40; i++ )); do kill -0 $job 2>/dev/null || break; zselect -t 25; done
+    if ! kill -0 $job 2>/dev/null; then
+      echo "adb server started${mode:+ ($mode)}"
+      return 0
+    fi
+    echo "adb start-server${mode:+ ($mode)} hung for 10 s — stopping it" >&2
+    platform stop_tree $job
+    case $mode in
+      "")           showStatus "USB isn't answering — trying another way…" ;;
+      ADB_LIBUSB=1) showStatus "USB isn't working — using the network only" ;;
+    esac
+  done
+  showStatus "A USB device is blocking PhoneConnect"
+  showAlert "couldn't start" "A USB device is blocking PhoneConnect. Unplug USB accessories (or the dock) and open PhoneConnect again."
+  return 1
 }
 
 # Read the saved phones; note whether the older single-phone file still has to be moved
@@ -1099,7 +1122,7 @@ main() {
   step startStatusWindow
   step stopPreviousRun
   step checkTools               || exit 1
-  step startAdbServer
+  step startAdbServer            || exit 1
   step loadSavedDevices
   step dropOfflineConnections
   step listConnectedDevices

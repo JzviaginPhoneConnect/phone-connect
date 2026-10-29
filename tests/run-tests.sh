@@ -307,6 +307,26 @@ check "its pid file removed at the end" no_file $WORK/tmp/PhoneConnect.pid
 run_app $C
 check "nothing to stop next time" eval '! logged_line "Stopped the previous run"'
 
+print "== adb server hangs in its own USB code: libusb used instead"
+rm -f $C/hung_adb $C/events
+export FAKE_HANG_START=native
+run_app $C
+check "hung try stopped (deaf to TERM)" eval '[[ -s $C/hung_adb ]] && ! kill -0 $(<$C/hung_adb) 2>/dev/null'
+check "started again with libusb" logged_line "adb server started (ADB_LIBUSB=1)"
+check "status: trying another way" logged_line "Status: USB isn't answering — trying another way…"
+check "this run went on" logged_line "Connection: Pixel 7 — USB (usbR)"
+check "no alert" no_file $C/alert
+
+print "== adb server hangs every way: told the user, stopped"
+rm -f $C/hung_adb
+export FAKE_HANG_START=1
+run_app $C
+check "tried libusb, then without USB" eval 'file_has events "start-server LIBUSB=1 USB=" && file_has events "start-server LIBUSB=1 USB=0"'
+check "told the user to unplug USB things" file_has alert "A USB device is blocking PhoneConnect."
+check "stopped there" eval '! logged_line "Step start: loadSavedDevices"'
+check "no hung adb left" eval '! kill -0 $(<$C/hung_adb) 2>/dev/null'
+unset FAKE_HANG_START
+
 print
 print "$PASS passed, $FAIL failed (log: $LOG)"
 (( FAIL == 0 ))
