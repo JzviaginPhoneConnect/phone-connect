@@ -327,6 +327,18 @@ check "stopped there" eval '! logged_line "Step start: loadSavedDevices"'
 check "no hung adb left" eval '! kill -0 $(<$C/hung_adb) 2>/dev/null'
 unset FAKE_HANG_START
 
+print "== phone answers on the network, but the computer blocks adb (No route to host)"
+rm -f $C/alert
+: > $C/usb
+print '10.0.0.40|RRR8888|Pixel 7||10.0.0.40' > $C/net
+export FAKE_NO_ROUTE=1
+run_app $C
+check "told the user the computer blocks it" file_has alert "this computer is blocking PhoneConnect"
+check "  ...and how to allow it (from env.sh)" eval '( source $APP/platform/env.real.sh 2>/dev/null; file_has alert "$NETWORK_BLOCKED_HELP" )'
+unset FAKE_NO_ROUTE
+run_app $C
+check "without the block: connected, no alert" eval 'logged_line "Connection: Pixel 7 — Wi-Fi (10.0.0.40:5555)" && no_file $C/alert'
+
 print
 print "$PASS passed, $FAIL failed (log: $LOG)"
 (( FAIL == 0 ))

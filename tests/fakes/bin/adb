@@ -27,6 +27,8 @@ case $1 in
   get-state) [[ -n "$(row "$S")" ]] && print device ;;
   connect)
     ip=${2%:*}
+    # FAKE_NO_ROUTE: the computer blocks adb from the network (macOS Local Network)
+    [[ -n $FAKE_NO_ROUTE ]] && { print -r -- "failed to connect to '$2': No route to host"; exit 0; }
     if grep -q "^$ip|" $F/net; then
       grep -qx "$2" $F/connected || print -r -- "$2" >> $F/connected
       print "connected to $2"

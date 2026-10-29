@@ -26,7 +26,7 @@ export APP_VERSION="@VERSION@"
 setopt NO_BG_NICE
 
 # Paths, tools and files for this OS: TOOLS_DIR ADB SCRCPY SCRCPY_SERVER_PATH
-# PHONES_FILE TASKS_FILE OLD_IPS_FILE LOG_FILE TMPDIR OS_INFO. Everything ships with the app,
+# PHONES_FILE TASKS_FILE OLD_IPS_FILE LOG_FILE TMPDIR OS_INFO NETWORK_BLOCKED_HELP. Everything ships with the app,
 # so nothing has to be installed. ${0:A:h} is this script's real folder.
 SCRIPT="${0:A}"
 PLATFORM="${SCRIPT:h}/platform"
@@ -57,6 +57,7 @@ TASKS_ADDED=0                         # 1: this run added tasks (run them again 
 TASK_SERIAL="" TASK_OPENED=""         # set by reachPhone
 AUDIO=() AUDIO_CHOICE=""              # scrcpy's audio option, and the answer given
 SCRCPY_JOB=""                         # background job running scrcpy
+NETWORK_BLOCKED=""                    # the phone answered, but the computer kept adb from it
 STATUS_WATCHER=""                     # background loop for the status window
 
 # =====================================================================
@@ -479,7 +480,7 @@ portOpen() {      # portOpen <ip>: quick check that something answers at IP:PORT
 }
 
 connectTo() {     # connectTo <ip> -> sets SERIAL on success
-  local i j state
+  local i j state out
   # Skip quickly if nothing answers there (e.g. the Ethernet IP while undocked);
   # otherwise `adb connect` can hang for over a minute.
   if ! portOpen "$1"; then
@@ -489,7 +490,10 @@ connectTo() {     # connectTo <ip> -> sets SERIAL on success
   fi
   for i in 1 2; do
     adb disconnect "${1}:${PORT}" >/dev/null 2>&1   # clear any stale/offline entry
-    withTimeout 8 adb connect "${1}:${PORT}" >/dev/null 2>&1
+    out=$(withTimeout 8 adb connect "${1}:${PORT}" 2>&1)
+    # The port answered (portOpen), yet no route: the computer blocks adb, not the
+    # network (macOS Local Network permission)
+    [[ "$out" == *"No route to host"* ]] && NETWORK_BLOCKED=1
     for j in 1 2 3; do                               # give it a moment to come online
       state=$(adb devices | awk -v d="${1}:${PORT}" '$1==d {print $2}')
       if [[ "$state" == "device" ]]; then
@@ -893,6 +897,13 @@ reportConnectionFailure() {
   name=$(savedName "$CHOSEN_ID"); name=${name:-the phone}
   echo "Couldn't connect to $name: every connection attempt failed." >&2
   showStatus "Couldn't connect to $name"
+  if [[ -n "$NETWORK_BLOCKED" ]]; then
+    echo "The phone answered, but adb was blocked (No route to host)" >&2
+    showAlert "couldn't connect" "$name is on the network, but this computer is blocking PhoneConnect from reaching it.
+
+$NETWORK_BLOCKED_HELP"
+    return 0
+  fi
   showAlert "couldn't connect" "Couldn't connect to $name.
 
 • Connect the phone to this computer with a USB cable, or
