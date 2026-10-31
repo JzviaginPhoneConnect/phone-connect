@@ -171,7 +171,9 @@ DeX = any display id other than 0.
 
 Settings: one window each launch (`askSettings`, platform `settings_form`: a pop-up
 menu per group; Mac an NSAlert through AppleScriptObjC, because JXA can't make the
-bold item; Windows WinForms), remembered per phone in phones.xml and the defaults next time:
+bold item; Windows WinForms; display only: the script passes the text, button captions,
+and per group the label, default, bold item and items), remembered per phone in phones.xml
+and the defaults next time:
 - Show: phone screen / DeX / headless, only when there's a choice (saved only then, so
   an undocked phone keeps DeX). Unsaved default: DeX if connected, else the phone screen
   (headless is never the default unless saved; the warning still shows every time).

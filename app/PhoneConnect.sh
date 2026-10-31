@@ -185,7 +185,8 @@ chooseItem() {
   print -r -- "$answer"
 }
 
-# settingsForm "Title" "Label 1" "Default 1" "Items 1 (one per line)" ["Label 2" ...]
+# settingsForm "Text" "OK button" "Cancel button" "Label 1" "Default 1" "Bold item 1 (or "")"
+#              "Items 1 (one per line)" ["Label 2" ...]
 #   -> the chosen item of each group, one per line (empty on Cancel)
 settingsForm() {
   local answer
@@ -1035,8 +1036,8 @@ checkVirtualDesktop() {
 #   Show           the phone screen, DeX (if a DeX display is connected) or the
 #                  headless desktop (if the phone can run it); only with a choice
 #   Sound          on the phone, or on this computer
-#   Video encoder  every encoder the phone has; the best one is marked ★ and is the
-#                  default until another one was chosen
+#   Video encoder  every encoder the phone has; the best one is marked ★ (and bold) and
+#                  is the default until another one was chosen
 # Without saved settings: DeX if it's connected, else the phone screen; sound on this
 # computer.
 # -> TARGET, AUDIO, AUDIO_CHOICE, VIDEO, VIDEO_CHOICE
@@ -1065,11 +1066,11 @@ askSettings() {
 
   while true; do
     groups=()
-    (( ${#screens} > 1 )) && groups+=("Show:" "$show" "${(pj:\n:)screens}")
-    groups+=("Sound:" "$sound" "$sound_off"$'\n'"$sound_on")
-    (( ${#encoders} )) && groups+=("Video encoder:" "$encoder" "${(pj:\n:)encoders}")
+    (( ${#screens} > 1 )) && groups+=("Show:" "$show" "" "${(pj:\n:)screens}")
+    groups+=("Sound:" "$sound" "" "$sound_off"$'\n'"$sound_on")
+    (( ${#encoders} )) && groups+=("Video encoder:" "$encoder" "${encoders[1]}" "${(pj:\n:)encoders}")
     showStatus "Choose the settings…"
-    answers=(${(f)"$(settingsForm "Settings for ${PHONE_NAME} — remembered for this phone." "${groups[@]}")"})
+    answers=(${(f)"$(settingsForm "Settings for ${PHONE_NAME} — remembered for this phone." "Start" "Cancel" "${groups[@]}")"})
     (( ${#answers} )) || return 2   # Cancel
     (( ${#screens} > 1 )) && { show=${answers[1]}; shift answers; }
     sound=${answers[1]} encoder=${answers[2]}

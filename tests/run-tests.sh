@@ -302,6 +302,8 @@ print "== no hardware H.265 (Redmi A3): hardware H.264 is the best"
 export FAKE_ENCODERS=redmi FAKE_MAKER=Xiaomi
 run_app $C
 check "encoders listed, aliases and unusable codecs left out" encoder_group "H.264 · hardware · c2.mtk.avc.encoder  ★ best|H.264 · software (slow) · c2.android.avc.encoder|H.265 · software (slow) · c2.android.hevc.encoder default: H.264 · hardware · c2.mtk.avc.encoder  ★ best"
+check "the best one is bold" file_has events "default: H.264 · hardware · c2.mtk.avc.encoder  ★ best bold: H.264 · hardware · c2.mtk.avc.encoder  ★ best"
+check "nothing else is bold" eval '[[ $(grep -c " bold: " $FAKE/events) == 1 ]]'
 check "scrcpy uses it" file_has scrcpy_args "-K --video-codec=h264 --video-encoder=c2.mtk.avc.encoder --max-fps=60"
 check "sound on this computer by default" eval 'file_has events "group: Sound: On the phone|On this computer (phone muted) default: On this computer (phone muted)" && ! file_has scrcpy_args "--no-audio"'
 check "one window, no other questions" eval '[[ $(grep -c "^form: Settings for Redmi A3" $FAKE/events) == 1 ]] && ! file_has events "ask: "'

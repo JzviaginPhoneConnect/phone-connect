@@ -1,7 +1,8 @@
 #!/bin/zsh
-# settings_form.sh "Title" "Label 1" "Default 1" "Items 1 (one per line)" ["Label 2" ...]
+# settings_form.sh "Text" "OK button" "Cancel button" "Label 1" "Default 1" "Bold item 1 (or "")"
+#                  "Items 1 (one per line)" ["Label 2" ...]
 #   -> the chosen item of each group, one per line (empty on Cancel)
-# One window with a pop-up menu per group; an item with a ★ is shown in bold.
+# One window with a pop-up menu per group.
 # An NSAlert with the menus below its text, through AppleScriptObjC (no permission
 # needed; JavaScript for Automation can't make bold menu items); everything is passed
 # as arguments, so quotes can't break it. The app's icon instead of osascript's.
@@ -11,7 +12,7 @@ use scripting additions
 on run argv
   set ca to current application
   activate
-  set groupCount to ((count of argv) - 3) div 3
+  set groupCount to ((count of argv) - 5) div 4
   set rowH to 34
   set labelW to 120
   set popW to 360
@@ -19,7 +20,7 @@ on run argv
   set boldText to ca's NSDictionary's dictionaryWithObject:(ca's NSFont's boldSystemFontOfSize:13) forKey:(ca's NSFontAttributeName)
   set pops to {}
   repeat with k from 1 to groupCount
-    set base to 4 + (k - 1) * 3
+    set base to 6 + (k - 1) * 4
     set y to (groupCount - k) * rowH
     set theLabel to ca's NSTextField's labelWithString:(item base of argv)
     theLabel's setFrame:(ca's NSMakeRect(0, y + 8, labelW - 10, 18))
@@ -27,10 +28,10 @@ on run argv
     theView's addSubview:theLabel
     set pop to ca's NSPopUpButton's alloc()'s initWithFrame:(ca's NSMakeRect(labelW, y + 2, popW, 26)) pullsDown:false
     set AppleScript's text item delimiters to linefeed
-    repeat with anItem in text items of (item (base + 2) of argv)
+    repeat with anItem in text items of (item (base + 3) of argv)
       set itemText to anItem as text
       (pop's addItemWithTitle:itemText)
-      if itemText contains "★" then
+      if itemText is (item (base + 2) of argv) then
         ((pop's lastItem())'s setAttributedTitle:(ca's NSAttributedString's alloc()'s initWithString:itemText attributes:boldText))
       end if
     end repeat
@@ -44,8 +45,8 @@ on run argv
   theAlert's setInformativeText:(item 3 of argv)
   set theIcon to ca's NSImage's alloc()'s initWithContentsOfFile:(item 2 of argv)
   if theIcon is not missing value then theAlert's setIcon:theIcon
-  theAlert's addButtonWithTitle:"Start"
-  theAlert's addButtonWithTitle:"Cancel"
+  theAlert's addButtonWithTitle:(item 4 of argv)
+  theAlert's addButtonWithTitle:(item 5 of argv)
   theAlert's setAccessoryView:theView
   (theAlert's |window|())'s setLevel:(ca's NSFloatingWindowLevel)
   ca's NSApplication's sharedApplication()'s activateIgnoringOtherApps:true

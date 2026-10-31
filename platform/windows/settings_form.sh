@@ -1,21 +1,21 @@
 #!/bin/zsh
-# settings_form.sh "Title" "Label 1" "Default 1" "Items 1 (one per line)" ["Label 2" ...]
+# settings_form.sh "Text" "OK button" "Cancel button" "Label 1" "Default 1" "Bold item 1 (or "")"
+#                  "Items 1 (one per line)" ["Label 2" ...]
 #   -> the chosen item of each group, one per line (empty on Cancel)
-# One window with a drop-down list per group; an item with a star is shown in bold.
+# One window with a drop-down list per group.
 source "${0:A:h}/_windows.sh"
 typeset -i k=0
-export PC_TEXT="$1"
-shift
-while (( $# >= 3 )); do     # group k -> PC_LABEL_k, PC_DEFAULT_k, PC_ITEMS_k
+export PC_TEXT="$1" PC_OK="$2" PC_CANCEL="$3"
+shift 3
+while (( $# >= 4 )); do     # group k -> PC_LABEL_k, PC_DEFAULT_k, PC_BOLD_k, PC_ITEMS_k
   (( k++ ))
-  export PC_LABEL_$k="$1" PC_DEFAULT_$k="$2" PC_ITEMS_$k="$3"
-  shift 3
+  export PC_LABEL_$k="$1" PC_DEFAULT_$k="$2" PC_BOLD_$k="$3" PC_ITEMS_$k="$4"
+  shift 4
 done
 PC_COUNT=$k run_ps '
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
-$star = [string][char]0x2605
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "PhoneConnect $env:APP_VERSION"
 $form.FormBorderStyle = "FixedDialog"
@@ -58,7 +58,8 @@ for ($k = 1; $k -le [int]$env:PC_COUNT; $k++) {
   $box.DropDownStyle = "DropDownList"
   $box.Width = 380
   $box.Font = $form.Font
-  # owner-drawn, so the item with the star can be bold
+  # owner-drawn, so the bold item can be bold
+  $box.Tag = [Environment]::GetEnvironmentVariable("PC_BOLD_$k")
   $box.DrawMode = "OwnerDrawFixed"
   $box.Add_DrawItem({
     param($s, $e)
@@ -66,7 +67,7 @@ for ($k = 1; $k -le [int]$env:PC_COUNT; $k++) {
     if ($e.Index -ge 0) {
       $text = [string]$s.Items[$e.Index]
       $font = $e.Font
-      if ($text.Contains($star)) { $font = New-Object System.Drawing.Font($e.Font, [System.Drawing.FontStyle]::Bold) }
+      if ($s.Tag -and $text -eq [string]$s.Tag) { $font = New-Object System.Drawing.Font($e.Font, [System.Drawing.FontStyle]::Bold) }
       [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $text, $font, $e.Bounds, $e.ForeColor, [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::Left)
     }
     $e.DrawFocusRectangle()
@@ -86,14 +87,14 @@ $buttons.FlowDirection = "LeftToRight"
 $buttons.AutoSize = $true
 $buttons.AutoSizeMode = "GrowAndShrink"
 $buttons.Anchor = "Right"
-foreach ($caption in @("Cancel", "Start")) {
+foreach ($caption in @($env:PC_CANCEL, $env:PC_OK)) {
   $b = New-Object System.Windows.Forms.Button
   $b.Text = $caption
   $b.AutoSize = $true
   $b.MinimumSize = New-Object System.Drawing.Size(100, 32)
   $b.Add_Click({ $f = $this.FindForm(); $f.Tag = $this.Text; $f.Close() })
   $buttons.Controls.Add($b)
-  if ($caption -eq "Start") { $form.AcceptButton = $b } else { $form.CancelButton = $b }
+  if ($caption -eq $env:PC_OK) { $form.AcceptButton = $b } else { $form.CancelButton = $b }
 }
 $outer.Controls.Add($buttons)
 $form.Controls.Add($outer)
@@ -101,6 +102,6 @@ $form.Add_Shown({ $this.Activate() })
 [void]$form.ShowDialog()
 $answer = [string]$form.Tag
 $form.Dispose()
-if ($answer -eq "Start") {
+if ($answer -eq $env:PC_OK) {
   [Console]::Out.Write((($boxes | ForEach-Object { [string]$_.SelectedItem }) -join "`n"))
 }'
