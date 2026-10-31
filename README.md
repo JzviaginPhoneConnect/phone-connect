@@ -56,8 +56,10 @@ The newest version is on the [Releases page](../../releases/latest). Older versi
 When you open PhoneConnect:
 
 1. **It finds the phone.** It tries a **USB** cable first, then **Ethernet** (a USB-C dock with a network port), then **Wi-Fi**. The window title shows which one it used, for example *PhoneConnect (Ethernet)*.
-2. **If a DeX screen is connected**, it asks whether to mirror **DeX** or the **phone screen**.
-3. **It asks about audio:** whether to play the phone's sound on the computer. While audio is on, the phone's own speaker is muted.
+2. **It shows the settings** in one window, remembered for each phone:
+   - **Show:** **DeX** or the **phone screen** (only when a DeX screen is connected, or the phone can run DeX/desktop mode headless).
+   - **Sound:** on the phone, or on the computer (the phone's own speaker is then muted).
+   - **Video encoder:** the phone's video encoders, the best one marked ★. Phones without a hardware H.265 encoder (e.g. Redmi A3) get hardware H.264; H.265 done in software is slow and blurry.
 4. **The phone opens in a window.** If no picture arrives within 15 seconds, it restarts the connection by itself, up to 3 tries.
 
 **Going cable-free.** Whenever the phone is plugged in, PhoneConnect switches on the phone's network mode and remembers its Wi-Fi and Ethernet addresses. After that you can unplug, and the next launches connect over the network. The phone forgets network mode when it **restarts**, so plug it in once after each restart.

@@ -4,7 +4,9 @@
 # app). Anything that differs between them is done by the scripts in platform/
 # (one set per OS, same names; see platform/README.md), never by checks in here.
 # Remembers several phones; asks which one to use when more than one is known.
-# Asks whether to use DeX (if a DeX display exists) and whether to forward audio.
+# Asks for the session's settings in one window, remembered for each phone: DeX or
+# the phone screen (if a DeX display exists), sound, and the video encoder (the best
+# one the phone has is marked).
 # Without one, on One UI 8+ / Android 16+ it offers a headless DeX / desktop mode on a
 # display scrcpy creates (experimental, after a warning). For that session it turns on
 # floating windows, and afterwards undoes that and restarts the phone's UI (tasks).
@@ -41,6 +43,7 @@ PORT=5555                        # adb's network port on the phone
 
 # ---- Results the steps hand to each other ----
 typeset -a P_ID P_NAME P_ETH P_WIFI   # saved phones (see "Saved phones")
+typeset -a P_SCREEN P_AUDIO P_ENCODER # their saved settings: phone|dex|virtual, on|off, encoder name
 typeset -A USB_OF                     # phone id -> USB serial, for phones plugged in now
 typeset -a USB_SERIALS                # serials of the phones on USB
 MIGRATE=0                             # 1: first run after an older version (old IPs file)
@@ -55,7 +58,9 @@ TARGET="phone"                        # phone, dex or virtual (headless desktop)
 typeset -a T_PHONE T_ACTION T_NS T_KEY T_VALUE  # tasks still to do on phones (see "Tasks")
 TASKS_ADDED=0                         # 1: this run added tasks (run them again on exit)
 TASK_SERIAL="" TASK_OPENED=""         # set by reachPhone
+typeset -a E_CODEC E_NAME E_HW        # the phone's video encoders: h264|h265|av1, name, 1 = hardware
 AUDIO=() AUDIO_CHOICE=""              # scrcpy's audio option, and the answer given
+VIDEO=(--video-codec=h265) VIDEO_CHOICE=""   # scrcpy's codec and encoder options, and the answer given
 SCRCPY_JOB=""                         # background job running scrcpy
 NETWORK_BLOCKED=""                    # the phone answered, but the computer kept adb from it
 STATUS_WATCHER=""                     # background loop for the status window
@@ -180,6 +185,16 @@ chooseItem() {
   print -r -- "$answer"
 }
 
+# settingsForm "Text" "OK button" "Cancel button" "Label 1" "Default 1" "Bold item 1 (or "")"
+#              "Items 1 (one per line)" ["Label 2" ...]
+#   -> the chosen item of each group, one per line (empty on Cancel)
+settingsForm() {
+  local answer
+  answer=$(platform settings_form "$@")
+  echo "Asked: $1 -> ${${answer//$'\n'/ | }:-Cancel}" >&2
+  print -r -- "$answer"
+}
+
 # showAlert "Title" "Message": a warning the user has to click away
 showAlert() { platform show_alert "$@" >/dev/null; }
 
@@ -203,7 +218,8 @@ onExit() {
 # Saved phones
 # One entry per phone, told apart by its serial number (not the model, since two
 # phones can be the same model), with its last known Ethernet and Wi-Fi IPs, in
-# PHONES_FILE (XML). Most recently used first. The empty id is a phone saved by an
+# PHONES_FILE (XML), and the settings last used with it (screen, audio, encoder; left
+# out until set). Most recently used first. The empty id is a phone saved by an
 # older version whose serial isn't known yet; it gets its real id on the first
 # connection. OLD_IPS_FILE is the older single-phone file.
 # =====================================================================
@@ -215,6 +231,20 @@ xmlEscape() {
 
 removePhone() {   # removePhone <index>
   P_ID[$1]=() P_NAME[$1]=() P_ETH[$1]=() P_WIFI[$1]=()
+  P_SCREEN[$1]=() P_AUDIO[$1]=() P_ENCODER[$1]=()
+}
+
+addPhone() {      # addPhone <id> <name> <eth> <wifi>: at the end, no settings yet
+  P_ID+=("$1") P_NAME+=("$2") P_ETH+=("$3") P_WIFI+=("$4")
+  P_SCREEN+=("") P_AUDIO+=("") P_ENCODER+=("")
+}
+
+settingAttributes() {   # settingAttributes <index>: the phone's saved settings as XML attributes
+  local i=$1 a=""
+  [[ -n "${P_SCREEN[i]}"  ]] && a+=" screen=\"$(xmlEscape "${P_SCREEN[i]}")\""
+  [[ -n "${P_AUDIO[i]}"   ]] && a+=" audio=\"$(xmlEscape "${P_AUDIO[i]}")\""
+  [[ -n "${P_ENCODER[i]}" ]] && a+=" encoder=\"$(xmlEscape "${P_ENCODER[i]}")\""
+  print -r -- "$a"
 }
 
 writeSavedDevices() {
@@ -227,7 +257,7 @@ writeSavedDevices() {
     print -r -- '<?xml version="1.0" encoding="UTF-8"?>'
     print -r -- '<phones>'
     for (( i = 1; i <= ${#P_ID}; i++ )); do
-      print -r -- "  <phone id=\"$(xmlEscape "${P_ID[i]}")\" name=\"$(xmlEscape "${P_NAME[i]}")\" eth=\"$(xmlEscape "${P_ETH[i]}")\" wifi=\"$(xmlEscape "${P_WIFI[i]}")\"/>"
+      print -r -- "  <phone id=\"$(xmlEscape "${P_ID[i]}")\" name=\"$(xmlEscape "${P_NAME[i]}")\" eth=\"$(xmlEscape "${P_ETH[i]}")\" wifi=\"$(xmlEscape "${P_WIFI[i]}")\"$(settingAttributes $i)/>"
     done
     print -r -- '</phones>'
   } > "$tmp" && mv -f "$tmp" "$PHONES_FILE"
@@ -254,7 +284,7 @@ savePhone() {
   local id=$1 name=$2 eth=$3 wifi=$4 idx i
   idx=$(phoneIndex "$id")
   if [[ -z "$idx" ]]; then
-    P_ID+=("$id") P_NAME+=("") P_ETH+=("") P_WIFI+=("")
+    addPhone "$id" "" "" ""
     idx=${#P_ID}
   fi
   for (( i = 1; i <= ${#P_ID}; i++ )); do
@@ -269,11 +299,13 @@ savePhone() {
 }
 
 markUsed() {      # markUsed <id>: move the phone to the top (the default next time)
-  local idx id name eth wifi
+  local idx id name eth wifi screen audio encoder
   idx=$(phoneIndex "$1") || return
   id=${P_ID[idx]} name=${P_NAME[idx]} eth=${P_ETH[idx]} wifi=${P_WIFI[idx]}
+  screen=${P_SCREEN[idx]} audio=${P_AUDIO[idx]} encoder=${P_ENCODER[idx]}
   removePhone $idx
   P_ID=("$id" "${P_ID[@]}") P_NAME=("$name" "${P_NAME[@]}") P_ETH=("$eth" "${P_ETH[@]}") P_WIFI=("$wifi" "${P_WIFI[@]}")
+  P_SCREEN=("$screen" "${P_SCREEN[@]}") P_AUDIO=("$audio" "${P_AUDIO[@]}") P_ENCODER=("$encoder" "${P_ENCODER[@]}")
   writeSavedDevices
 }
 
@@ -662,7 +694,7 @@ startAdbServer() {
 # Read the saved phones; note whether the older single-phone file still has to be moved
 loadSavedDevices() {
   local n i
-  P_ID=() P_NAME=() P_ETH=() P_WIFI=()
+  P_ID=() P_NAME=() P_ETH=() P_WIFI=() P_SCREEN=() P_AUDIO=() P_ENCODER=()
   [[ ! -e "$PHONES_FILE" && -e "$OLD_IPS_FILE" ]] && MIGRATE=1 || MIGRATE=0
   [[ -s "$PHONES_FILE" ]] || return 0
   n=$(xmllint --xpath 'count(/phones/phone)' "$PHONES_FILE" 2>/dev/null)
@@ -671,6 +703,9 @@ loadSavedDevices() {
     P_NAME+=("$(xmllint --xpath "string(/phones/phone[$i]/@name)" "$PHONES_FILE" 2>/dev/null)")
     P_ETH+=("$(xmllint --xpath "string(/phones/phone[$i]/@eth)" "$PHONES_FILE" 2>/dev/null)")
     P_WIFI+=("$(xmllint --xpath "string(/phones/phone[$i]/@wifi)" "$PHONES_FILE" 2>/dev/null)")
+    P_SCREEN+=("$(xmllint --xpath "string(/phones/phone[$i]/@screen)" "$PHONES_FILE" 2>/dev/null)")
+    P_AUDIO+=("$(xmllint --xpath "string(/phones/phone[$i]/@audio)" "$PHONES_FILE" 2>/dev/null)")
+    P_ENCODER+=("$(xmllint --xpath "string(/phones/phone[$i]/@encoder)" "$PHONES_FILE" 2>/dev/null)")
   done
   return 0
 }
@@ -761,7 +796,7 @@ migrateOldSavedIps() {
       [[ -z "${P_WIFI[idx]}" ]] && P_WIFI[idx]=$old_wifi
     elif ! phoneIndex "" >/dev/null; then
       # Nobody answered: keep the IPs, the phone gets identified on its first connection
-      P_ID+=("") P_NAME+=("Phone") P_ETH+=("$old_eth") P_WIFI+=("$old_wifi")
+      addPhone "" "Phone" "$old_eth" "$old_wifi"
     fi
   fi
   writeSavedDevices
@@ -929,15 +964,50 @@ connectToChosenDevice() {
   return 0
 }
 
-# Look for a DeX (external) display: any display other than 0 -> DEX_ID
-findDexDisplay() {
+# Look for a DeX (external) display: any display other than 0 -> DEX_ID. In the same
+# call, the phone's video encoders (scrcpy can show the picture with), best first ->
+# E_CODEC E_NAME E_HW; aliases (other names for the same encoder) are left out.
+findDisplaysAndEncoders() {
+  local out line
   showStatus "Looking for a DeX screen…"
-  DEX_ID=$(LOGGED_LABEL="scrcpy -s $SERIAL --list-displays" runLogged "$SCRCPY" -s "$SERIAL" --list-displays 2>&1 \
-    | grep -o 'display-id=[0-9]*' \
-    | cut -d= -f2 \
-    | grep -v '^0$' \
-    | head -1)
+  out=$(LOGGED_LABEL="scrcpy -s $SERIAL --list-displays --list-encoders" runLogged "$SCRCPY" -s "$SERIAL" --list-displays --list-encoders 2>&1)
+  DEX_ID=$(print -r -- "$out" | grep -o 'display-id=[0-9]*' | cut -d= -f2 | grep -v '^0$' | head -1)
+  E_CODEC=() E_NAME=() E_HW=()
+  for line in ${(f)out}; do
+    [[ "$line" == *alias* ]] && continue
+    [[ "$line" =~ '--video-codec=(h264|h265|av1) --video-encoder=([^ ]+) +\(([a-z]+)\)' ]] || continue
+    E_CODEC+=("${match[1]}") E_NAME+=("${match[2]}")
+    [[ "${match[3]}" == sw ]] && E_HW+=(0) || E_HW+=(1)
+  done
+  sortEncoders
+  echo "Video encoders: ${(j:, :)E_NAME:-none}"
   return 0
+}
+
+# sortEncoders: best first. One done by the phone's hardware (software ones are slow,
+# and their limits make scrcpy shrink the picture), then H.265 > H.264 > AV1 (H.265:
+# sharper at the same bit rate; AV1 is decoded by the Mac's or PC's hardware only on
+# recent ones).
+sortEncoders() {
+  local want i
+  local -a codec name hw
+  for want in 1h265 1h264 1av1 0h264 0h265 0av1; do
+    for (( i = 1; i <= ${#E_NAME}; i++ )); do
+      [[ "${E_HW[i]}${E_CODEC[i]}" == $want ]] || continue
+      codec+=("${E_CODEC[i]}") name+=("${E_NAME[i]}") hw+=("${E_HW[i]}")
+    done
+  done
+  E_CODEC=("${codec[@]}") E_NAME=("${name[@]}") E_HW=("${hw[@]}")
+}
+
+encoderLabel() {  # encoderLabel <index>: how an encoder is listed in the settings
+  local i=$1 codec
+  case ${E_CODEC[i]} in h264) codec=H.264 ;; h265) codec=H.265 ;; *) codec=AV1 ;; esac
+  if (( E_HW[i] )); then
+    print -r -- "$codec · hardware · ${E_NAME[i]}"
+  else
+    print -r -- "$codec · software (slow) · ${E_NAME[i]}"
+  fi
 }
 
 # Without a DeX display: can the phone run its desktop headless, on a display scrcpy
@@ -961,34 +1031,81 @@ checkVirtualDesktop() {
   return 0
 }
 
-# DeX or the phone screen? Asked when there's a DeX display, or else when the phone
-# can run its desktop headless. -> TARGET
-askMirrorTarget() {
-  local choice
-  TARGET="phone"
-  if [[ -n "$DEX_ID" ]]; then
-    choice=$(askQuestion "A DeX display is connected. What do you want to mirror?" "Phone screen" "DeX")
-    [[ -z "$choice" ]] && return 2   # Cancel
-    [[ "$choice" == "DeX" ]] && TARGET="dex"
-  elif [[ -n "$VIRTUAL_DESKTOP" ]]; then
-    while true; do
-      choice=$(askQuestion "What do you want to mirror?" "Phone screen" "$VIRTUAL_DESKTOP")
-      [[ -z "$choice" ]] && return 2   # Cancel
-      [[ "$choice" == "$VIRTUAL_DESKTOP" ]] || return 0
-      # "Go back" is the default button
-      choice=$(askQuestion "${VIRTUAL_DESKTOP% \(experimental\)} is experimental.
+# The session's settings, in one window, remembered for this phone (the saved ones are
+# the defaults next time):
+#   Show           the phone screen, DeX (if a DeX display is connected) or the
+#                  headless desktop (if the phone can run it); only with a choice
+#   Sound          on the phone, or on this computer
+#   Video encoder  every encoder the phone has; the best one is marked ★ (and bold) and
+#                  is the default until another one was chosen
+# Without saved settings: DeX if it's connected, else the phone screen; sound on this
+# computer.
+# -> TARGET, AUDIO, AUDIO_CHOICE, VIDEO, VIDEO_CHOICE
+askSettings() {
+  local idx i choice show sound encoder
+  local -a screens encoders groups answers
+  local sound_off="On the phone" sound_on="On this computer (phone muted)"
+  idx=$(phoneIndex "$CHOSEN_ID")
+  screens=("Phone screen")
+  [[ -n "$DEX_ID" ]] && screens+=("DeX")
+  [[ -n "$VIRTUAL_DESKTOP" ]] && screens+=("$VIRTUAL_DESKTOP")
+  case ${idx:+${P_SCREEN[idx]}} in
+    phone)   show="Phone screen" ;;
+    dex)     show="DeX" ;;
+    virtual) show=$VIRTUAL_DESKTOP ;;
+  esac
+  # not saved (or not there now): DeX if it's connected, else the phone screen
+  (( ${screens[(Ie)$show]} )) || show=${${DEX_ID:+DeX}:-Phone screen}
+  [[ "${idx:+${P_AUDIO[idx]}}" == off ]] && sound=$sound_off || sound=$sound_on
+  for (( i = 1; i <= ${#E_NAME}; i++ )); do
+    encoders+=("$(encoderLabel $i)")
+    (( i == 1 )) && encoders[i]+="  ★ best"
+    [[ -n "$idx" && "${E_NAME[i]}" == "${P_ENCODER[idx]}" ]] && encoder=${encoders[i]}
+  done
+  encoder=${encoder:-${encoders[1]}}
+
+  while true; do
+    groups=()
+    (( ${#screens} > 1 )) && groups+=("Show:" "$show" "" "${(pj:\n:)screens}")
+    groups+=("Sound:" "$sound" "" "$sound_off"$'\n'"$sound_on")
+    (( ${#encoders} )) && groups+=("Video encoder:" "$encoder" "${encoders[1]}" "${(pj:\n:)encoders}")
+    showStatus "Choose the settings…"
+    answers=(${(f)"$(settingsForm "Settings for ${PHONE_NAME} — remembered for this phone." "Start" "Cancel" "${groups[@]}")"})
+    (( ${#answers} )) || return 2   # Cancel
+    (( ${#screens} > 1 )) && { show=${answers[1]}; shift answers; }
+    sound=${answers[1]} encoder=${answers[2]}
+    [[ "$show" == "$VIRTUAL_DESKTOP" && -n "$show" ]] || break
+    # "Go back" is the default button
+    choice=$(askQuestion "${VIRTUAL_DESKTOP% \(experimental\)} is experimental.
 
 • After the session the phone's back gesture stops working until its interface restarts. PhoneConnect restarts it when you close the window (the status bar flickers once).
 
 • To give apps their own windows, PhoneConnect turns on \"freeform windows\" (Developer options) for the session and turns it off afterwards.
 
 • If the phone loses its connection before that, connect it again and open PhoneConnect to finish. Restarting the phone also fixes the back gesture." "Continue" "Go back")
-      [[ -z "$choice" ]] && return 2   # Cancel
-      if [[ "$choice" == "Continue" ]]; then
-        TARGET="virtual"
-        return 0
-      fi
-    done
+    [[ -z "$choice" ]] && return 2   # Cancel
+    [[ "$choice" == "Continue" ]] && break
+  done
+
+  case $show in
+    DeX)               TARGET="dex" ;;
+    "$VIRTUAL_DESKTOP") TARGET="virtual" ;;
+    *)                 TARGET="phone" ;;
+  esac
+  AUDIO_CHOICE=$sound
+  [[ "$sound" == "$sound_on" ]] && AUDIO=() || AUDIO=(--no-audio)
+  i=${encoders[(ie)$encoder]}
+  if (( i <= ${#E_NAME} )); then
+    VIDEO=(--video-codec=${E_CODEC[i]} --video-encoder=${E_NAME[i]}) VIDEO_CHOICE=${E_NAME[i]}
+  else
+    VIDEO_CHOICE="the phone's default H.265 (its encoders weren't listed)"
+  fi
+  # Remember them; what to show only if there was a choice (an undocked phone keeps DeX)
+  if [[ -n "$idx" ]]; then
+    (( ${#screens} > 1 )) && P_SCREEN[idx]=$TARGET
+    [[ "$sound" == "$sound_on" ]] && P_AUDIO[idx]=on || P_AUDIO[idx]=off
+    (( ${#E_NAME} )) && P_ENCODER[idx]=${E_NAME[i]}
+    writeSavedDevices
   fi
   return 0
 }
@@ -1010,20 +1127,6 @@ prepareHeadless() {
     echo "Floating windows turned on (was ${old:-not set})"
   else
     echo "Couldn't turn on floating windows"
-  fi
-  return 0
-}
-
-# Sound on this computer? -> AUDIO, AUDIO_CHOICE
-askAudio() {
-  AUDIO_CHOICE=$(askQuestion "Play the phone's sound on this computer?
-
-(While on, the phone's own speaker is muted.)" "No audio" "With audio")
-  [[ -z "$AUDIO_CHOICE" ]] && return 2   # Cancel
-  if [[ "$AUDIO_CHOICE" == "With audio" ]]; then
-    AUDIO=()
-  else
-    AUDIO=(--no-audio)
   fi
   return 0
 }
@@ -1067,9 +1170,11 @@ runScrcpyWithRetries() {
   local attempt pid rc out="$TMPDIR/PhoneConnect.$$.scrcpy.out"
   local -a args extra
   # -V debug: scrcpy's detailed messages, for the log
+  # VIDEO: the codec and encoder chosen in the settings
   # bitrate-mode=1: variable bit rate. The bit rate is an average, so frames with a lot
   # of motion (scrolling) may use more instead of being held back.
-  local -a common=(-s "$SERIAL" -K --video-codec=h265 --max-fps=60 --video-codec-options=bitrate-mode:int=1 -V debug "${AUDIO[@]}")
+  local -a common=(-s "$SERIAL" -K "${VIDEO[@]}" --max-fps=60 --video-codec-options=bitrate-mode:int=1 -V debug "${AUDIO[@]}")
+  echo "Video encoder: $VIDEO_CHOICE"
   if [[ "$TARGET" == "dex" ]]; then
     echo "Mirroring DeX (display $DEX_ID), audio: $AUDIO_CHOICE"
     args=("${common[@]}" --display-id="$DEX_ID" --video-bit-rate=8M
@@ -1143,10 +1248,9 @@ main() {
   step checkAnyDeviceKnown       || exit 1
   step displayDeviceChoiceDialog || exit 0      # 2 = cancelled
   step connectToChosenDevice     || exit 1
-  step findDexDisplay
+  step findDisplaysAndEncoders
   step checkVirtualDesktop
-  step askMirrorTarget           || exit 0      # cancelled
-  step askAudio                  || exit 0      # cancelled
+  step askSettings               || exit 0      # cancelled
   step prepareHeadless
   step runScrcpyWithRetries "$@"
   rc=$?

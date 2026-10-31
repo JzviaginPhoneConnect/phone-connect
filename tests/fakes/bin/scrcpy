@@ -1,8 +1,28 @@
 #!/bin/zsh -f
 # Fake scrcpy: no DeX display (unless FAKE_DEX_DISPLAY=<id>); "shows the picture" at
-# once, then quits.
+# once, then quits. Video encoders: hardware H.264 and H.265, software H.264;
+# FAKE_ENCODERS=redmi: hardware H.264 only (H.265 in software), =none: no list.
+encoders() {
+  print "[server] INFO: List of video encoders:"
+  case $FAKE_ENCODERS in
+    none) ;;
+    redmi)
+      print "    --video-codec=h264 --video-encoder=c2.mtk.avc.encoder             (hw) [vendor]"
+      print "    --video-codec=h264 --video-encoder=OMX.MTK.VIDEO.ENCODER.AVC      (hw) [vendor] (alias for c2.mtk.avc.encoder)"
+      print "    --video-codec=h264 --video-encoder=c2.android.avc.encoder         (sw)"
+      print "    --video-codec=h265 --video-encoder=c2.android.hevc.encoder        (sw)"
+      print "    --video-codec=vp8 --video-encoder=c2.android.vp8.encoder          (sw)" ;;
+    *)
+      print "    --video-codec=h264 --video-encoder=c2.fake.avc.encoder            (hw) [vendor]"
+      print "    --video-codec=h265 --video-encoder=c2.fake.hevc.encoder           (hw) [vendor]"
+      print "    --video-codec=h264 --video-encoder=c2.android.avc.encoder         (sw)" ;;
+  esac
+}
 case " $* " in
-  *" --list-displays "*) print "    --display-id=0"; [[ -n $FAKE_DEX_DISPLAY ]] && print "    --display-id=$FAKE_DEX_DISPLAY"; exit 0 ;;
+  *" --list-displays "*)
+    [[ " $* " == *" --list-encoders "* ]] && encoders
+    print "[server] INFO: List of displays:"
+    print "    --display-id=0"; [[ -n $FAKE_DEX_DISPLAY ]] && print "    --display-id=$FAKE_DEX_DISPLAY"; exit 0 ;;
   *" --version "*) print "scrcpy 0.0 (fake)"; exit 0 ;;
 esac
 print -r -- "$*" > $FAKE/scrcpy_args
