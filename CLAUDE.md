@@ -23,7 +23,7 @@ end user installs nothing and never opens a terminal.
 - `platform/macos/*.sh`, `platform/windows/*.sh` — everything OS-specific, same names and
   interfaces on both, packaged next to the script as `platform/`. The script sources
   `env.sh` and runs the rest as `zsh -f platform/<name>.sh …` (logged):
-  `env.sh` (paths, tools, files, `OS_INFO`), `unquarantine`, `ask_question`,
+  `env.sh` (paths, tools, files, `OS_INFO`, `RENDER_DRIVERS`), `unquarantine`, `ask_question`,
   `choose_item`, `settings_form`, `show_alert`, `run_with_timeout`, `port_open`, `run_scrcpy`,
   `picture_up`, `stop_scrcpy`, `stop_previous`, `stop_tree`, `bring_to_front`, `status_window`.
 - Opening the app again stops the previous run if it's still going (`stopPreviousRun`:
@@ -128,7 +128,7 @@ end user installs nothing and never opens a terminal.
 
 Several phones are remembered, in XML: `~/.phoneconnect_phones.xml` on Mac (read with
 the system's `xmllint`), `%APPDATA%\PhoneConnect\phones.xml` on Windows.
-`<phone id name eth wifi [screen audio encoder]>`, most recently used first. The
+`<phone id name eth wifi [screen audio encoder decoder renderer]>`, most recently used first. The
 optional attributes are the settings last chosen for that phone (see Settings below).
 - A phone is identified by `ro.serialno` (fallbacks `ro.boot.serialno`, `android_id`),
   not the model — two phones can be the same model. `adb get-serialno` is no good: over
@@ -184,6 +184,13 @@ and the defaults next time:
   no hardware H.265 encoder; asking for h265 got Google's software `c2.android.hevc.encoder`,
   whose limits made scrcpy shrink the picture to 222x512, and it lagged. Hardware H.264
   there: 698x1600 at ~55 fps. No list → `--video-codec=h265` as before.
+- Decoding: software (`--hwdec=disabled`, default, bold) / hardware (`--hwdec=auto`:
+  VideoToolbox on Mac, D3D11 on Windows). Why: on an M1 Pro, VideoToolbox looked less
+  smooth than software decoding (S22, H.264 746x1600, same settings), which used under 2%
+  of the CPU; Windows in the Parallels VM decodes in software anyway (no D3D11 decoder).
+- Renderer: Automatic (no `--render-driver`, SDL's choice: Metal / Direct3D 11) or one of
+  the platform's `RENDER_DRIVERS` (data in `env.sh`; labels in the main script). A saved
+  driver the computer doesn't list → Automatic.
 
 Things tried and **rejected**:
 - `-S` (turn phone screen off): some phones (Samsung) throttle rendering → choppy.

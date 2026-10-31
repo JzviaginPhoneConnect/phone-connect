@@ -66,7 +66,7 @@ check() {         # check <description> <command...>
 }
 logged_line()  { run_log | grep -qF -- "$1"; }
 # phones.xml without the saved settings (screen, audio, encoder: checked on their own)
-phones_xml()   { sed -E 's/ (screen|audio|encoder)="[^"]*"//g' $FAKE/phones.xml; }
+phones_xml()   { sed -E 's/ (screen|audio|encoder|decoder|renderer)="[^"]*"//g' $FAKE/phones.xml; }
 xml_is()       { [[ "$(phones_xml)" == "$1" ]] || { print -r -- "       got:"; sed 's/^/       /' $FAKE/phones.xml; return 1; } }
 file_has()     { [[ -f $FAKE/$1 ]] && grep -qF -- "$2" $FAKE/$1; }
 no_file()      { [[ ! -e $1 ]]; }
@@ -128,7 +128,7 @@ check "IP moved between known phones" xml_is "$(xml '  <phone id="AAA1111" name=
 # The same priority as the app itself (CI runners may run everything at a raised nice level)
 BASE_NICE=$(ps -o nice= -p $$ 2>/dev/null); BASE_NICE=${BASE_NICE// /}
 check "scrcpy runs at the app's own priority (not lowered for background jobs)" eval '[[ ! -s $FAKE/scrcpy_nice || -z $BASE_NICE || "$(<$FAKE/scrcpy_nice)" == "$BASE_NICE" ]]'
-check "scrcpy got the phone-screen options" file_has scrcpy_args "-s 10.0.0.20:5555 -K --video-codec=h265 --video-encoder=c2.fake.hevc.encoder --max-fps=60 --video-codec-options=bitrate-mode:int=1 -V debug --max-size=1600 --video-bit-rate=6M --window-title=PhoneConnect — Galaxy S23 (Wi-Fi)"
+check "scrcpy got the phone-screen options" file_has scrcpy_args "-s 10.0.0.20:5555 -K --video-codec=h265 --video-encoder=c2.fake.hevc.encoder --max-fps=60 --video-codec-options=bitrate-mode:int=1 -V debug --hwdec=disabled --max-size=1600 --video-bit-rate=6M --window-title=PhoneConnect — Galaxy S23 (Wi-Fi)"
 
 # ==== 2. old IPs nobody answers at, identified later; switch to Ethernet ====
 C=$WORK/later; mkdir -p $C
@@ -303,11 +303,12 @@ export FAKE_ENCODERS=redmi FAKE_MAKER=Xiaomi
 run_app $C
 check "encoders listed, aliases and unusable codecs left out" encoder_group "H.264 · hardware · c2.mtk.avc.encoder  ★ best|H.264 · software (slow) · c2.android.avc.encoder|H.265 · software (slow) · c2.android.hevc.encoder default: H.264 · hardware · c2.mtk.avc.encoder  ★ best"
 check "the best one is bold" file_has events "default: H.264 · hardware · c2.mtk.avc.encoder  ★ best bold: H.264 · hardware · c2.mtk.avc.encoder  ★ best"
-check "nothing else is bold" eval '[[ $(grep -c " bold: " $FAKE/events) == 1 ]]'
+check "nothing else is bold (but software decoding)" eval '[[ $(grep -c " bold: " $FAKE/events) == 2 ]]'
 check "scrcpy uses it" file_has scrcpy_args "-K --video-codec=h264 --video-encoder=c2.mtk.avc.encoder --max-fps=60"
 check "sound on this computer by default" eval 'file_has events "group: Sound: On the phone|On this computer (phone muted) default: On this computer (phone muted)" && ! file_has scrcpy_args "--no-audio"'
 check "one window, no other questions" eval '[[ $(grep -c "^form: Settings for Redmi A3" $FAKE/events) == 1 ]] && ! file_has events "ask: "'
-check "settings saved for the phone" file_has phones.xml 'audio="on" encoder="c2.mtk.avc.encoder"'
+check "settings saved for the phone" file_has phones.xml 'audio="on" encoder="c2.mtk.avc.encoder" decoder="sw"'
+check "  ...automatic renderer: none saved" eval '! file_has phones.xml "renderer="'
 check "  ...no screen saved (there was no choice)" eval '! file_has phones.xml "screen="'
 
 print "== another encoder and the phone's own sound chosen"
@@ -352,6 +353,27 @@ check "no encoder menu" eval '! file_has events "group: Video encoder:"'
 check "scrcpy picks its own H.265 encoder" eval 'file_has scrcpy_args "-K --video-codec=h265 --max-fps=60" && ! file_has scrcpy_args "--video-encoder"'
 check "saved encoder kept" file_has phones.xml 'encoder="c2.android.hevc.encoder"'
 unset FAKE_ENCODERS
+
+print "== decoding and renderer"
+unset FAKE_ENCODERS
+print 'usbX|XXX9999|Redmi A3||10.0.0.50|5555' > $C/usb
+rm -f $C/phones.xml
+run_app $C
+check "software decoding by default, and bold" file_has events "group: Decoding: Software|Hardware (GPU) default: Software bold: Software"
+check "renderer: Automatic first and the default, then this computer's drivers" eval 'grep "group: Renderer: Automatic|" $FAKE/events | grep -F "|OpenGL|" | grep -qF "default: Automatic"'
+check "scrcpy: software decoding, no render driver" eval 'file_has scrcpy_args "-V debug --hwdec=disabled" && ! file_has scrcpy_args "--render-driver"'
+check "logged" logged_line "Decoding: Software; renderer: Automatic"
+print 'Hardware (GPU)\nOpenGL' > $C/answers
+run_app $C
+check "hardware decoding and OpenGL chosen" file_has scrcpy_args "-V debug --hwdec=auto --render-driver=opengl"
+check "  ...saved" file_has phones.xml 'decoder="hw" renderer="opengl"'
+run_app $C
+check "  ...the defaults next time" eval 'file_has events "group: Decoding: Software|Hardware (GPU) default: Hardware (GPU)" && file_has events "default: OpenGL"'
+print "== a saved renderer this computer doesn't have: automatic"
+sed -i.bak 's/renderer="opengl"/renderer="no-such-driver"/' $C/phones.xml
+run_app $C
+check "renderer default is Automatic" eval 'grep "group: Renderer:" $FAKE/events | grep -qF "default: Automatic" && ! file_has scrcpy_args "--render-driver"'
+check "decoding still saved" file_has scrcpy_args "--hwdec=auto"
 
 print "== Cancel in the settings window"
 : > $C/cancel_settings
