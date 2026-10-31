@@ -65,7 +65,9 @@ check() {         # check <description> <command...>
   fi
 }
 logged_line()  { run_log | grep -qF -- "$1"; }
-xml_is()       { [[ "$(<$FAKE/phones.xml)" == "$1" ]] || { print -r -- "       got:"; sed 's/^/       /' $FAKE/phones.xml; return 1; } }
+# phones.xml without the saved settings (screen, audio, encoder: checked on their own)
+phones_xml()   { sed -E 's/ (screen|audio|encoder)="[^"]*"//g' $FAKE/phones.xml; }
+xml_is()       { [[ "$(phones_xml)" == "$1" ]] || { print -r -- "       got:"; sed 's/^/       /' $FAKE/phones.xml; return 1; } }
 file_has()     { [[ -f $FAKE/$1 ]] && grep -qF -- "$2" $FAKE/$1; }
 no_file()      { [[ ! -e $1 ]]; }
 xml() { print -r -- '<?xml version="1.0" encoding="UTF-8"?>'; print -r -- '<phones>'; print -rl -- "$@"; print -r -- '</phones>'; }
@@ -126,7 +128,7 @@ check "IP moved between known phones" xml_is "$(xml '  <phone id="AAA1111" name=
 # The same priority as the app itself (CI runners may run everything at a raised nice level)
 BASE_NICE=$(ps -o nice= -p $$ 2>/dev/null); BASE_NICE=${BASE_NICE// /}
 check "scrcpy runs at the app's own priority (not lowered for background jobs)" eval '[[ ! -s $FAKE/scrcpy_nice || -z $BASE_NICE || "$(<$FAKE/scrcpy_nice)" == "$BASE_NICE" ]]'
-check "scrcpy got the phone-screen options" file_has scrcpy_args "-s 10.0.0.20:5555 -K --video-codec=h265 --max-fps=60 --video-codec-options=bitrate-mode:int=1 -V debug --no-audio --max-size=1600 --video-bit-rate=6M --window-title=PhoneConnect — Galaxy S23 (Wi-Fi)"
+check "scrcpy got the phone-screen options" file_has scrcpy_args "-s 10.0.0.20:5555 -K --video-codec=h265 --video-encoder=c2.fake.hevc.encoder --max-fps=60 --video-codec-options=bitrate-mode:int=1 -V debug --max-size=1600 --video-bit-rate=6M --window-title=PhoneConnect — Galaxy S23 (Wi-Fi)"
 
 # ==== 2. old IPs nobody answers at, identified later; switch to Ethernet ====
 C=$WORK/later; mkdir -p $C
@@ -192,13 +194,15 @@ rm -f $C/cancel_on_choose
 C=$WORK/headless; mkdir -p $C
 print 'usbH|HHH6666|Galaxy S25||10.0.0.11|5555' > $C/usb
 asked_buttons() { file_has events "buttons: $1"; }
+offered()       { file_has events "group: Show: $1 default:"; }
 setting_is()    { [[ "$(grep -F "HHH6666 global enable_freeform_support=" $FAKE/settings 2>/dev/null)" == "${1:+HHH6666 global enable_freeform_support=$1}" ]]; }
 no_tasks()      { [[ ! -e $FAKE/tasks.xml ]]; }
 print "== Samsung, One UI 8, no external display: headless DeX, warning, Continue"
 export FAKE_ONEUI=80000
 print 'DeX headless (experimental)\nContinue' > $C/answers
 run_app $C
-check "offered as DeX headless" asked_buttons "Phone screen|DeX headless (experimental)"
+check "offered as DeX headless" offered "Phone screen|DeX headless (experimental)"
+check "  ...not the default" file_has events "default: Phone screen"
 check "warned, with Go back as an option" eval 'file_has events "ask: DeX headless is experimental." && asked_buttons "Continue|Go back"'
 check "scrcpy got a new display, not a display id" eval 'file_has scrcpy_args "--new-display=1920x1080/160 --video-bit-rate=8M --window-title=PhoneConnect — Galaxy S25, DeX headless (USB)" && ! file_has scrcpy_args "--display-id"'
 check "floating windows turned on before scrcpy started" eval 'run_log | grep -n -e "Floating windows turned on" -e "Starting (attempt 1)" | head -1 | grep -qF "Floating windows"'
@@ -222,7 +226,7 @@ rm -f $C/settings
 print "== Go back, then the phone screen"
 print 'DeX headless (experimental)\nGo back\nPhone screen' > $C/answers
 run_app $C
-check "asked again after Go back" eval '[[ $(grep -c "ask: What do you want to mirror?" $FAKE/events) == 2 ]]'
+check "settings shown again after Go back" eval '[[ $(grep -c "^form: " $FAKE/events) == 2 ]]'
 check "phone screen mirrored" file_has scrcpy_args "--max-size=1600"
 check "nothing done to the phone" eval '! file_has events "settings " && ! file_has events "systemui" && ! file_has events "windowing mode" && no_tasks'
 
@@ -270,24 +274,89 @@ rm -f $C/on_scrcpy
 print "== Samsung, One UI 7: not offered"
 export FAKE_ONEUI=70000
 run_app $C
-check "no mirror question" eval '! file_has events "What do you want to mirror?"'
+check "no choice of what to show" eval '! file_has events "group: Show:"'
 check "phone screen mirrored" file_has scrcpy_args "--max-size=1600"
 print "== Samsung, One UI 8, real DeX display: only the old question"
 export FAKE_ONEUI=80000 FAKE_DEX_DISPLAY=2
 run_app $C
-check "real DeX offered" asked_buttons "Phone screen|DeX"
+check "real DeX offered" offered "Phone screen|DeX"
+check "  ...and the default" file_has events "group: Show: Phone screen|DeX default: DeX"
 check "  ...headless not offered" eval '! file_has events "headless"'
 check "nothing done to the phone" eval '! file_has events "settings " && ! file_has events "systemui" && ! file_has events "windowing mode" && no_tasks'
 unset FAKE_DEX_DISPLAY FAKE_ONEUI
 print "== other phone, Android 16"
 export FAKE_MAKER=Google FAKE_SDK=36
 run_app $C
-check "offered as desktop mode headless" asked_buttons "Phone screen|Desktop mode headless (experimental)"
+check "offered as desktop mode headless" offered "Phone screen|Desktop mode headless (experimental)"
 print "== other phone, Android 15: not offered"
 export FAKE_SDK=35
 run_app $C
-check "no mirror question" eval '! file_has events "What do you want to mirror?"'
+check "no choice of what to show" eval '! file_has events "group: Show:"'
 unset FAKE_MAKER FAKE_SDK
+
+# ==== 8. settings window: video encoder, sound, remembered for each phone ====
+C=$WORK/settings; mkdir -p $C
+print 'usbX|XXX9999|Redmi A3||10.0.0.50|5555' > $C/usb
+encoder_group() { file_has events "group: Video encoder: $1"; }
+print "== no hardware H.265 (Redmi A3): hardware H.264 is the best"
+export FAKE_ENCODERS=redmi FAKE_MAKER=Xiaomi
+run_app $C
+check "encoders listed, aliases and unusable codecs left out" encoder_group "H.264 · hardware · c2.mtk.avc.encoder  ★ best|H.264 · software (slow) · c2.android.avc.encoder|H.265 · software (slow) · c2.android.hevc.encoder default: H.264 · hardware · c2.mtk.avc.encoder  ★ best"
+check "scrcpy uses it" file_has scrcpy_args "-K --video-codec=h264 --video-encoder=c2.mtk.avc.encoder --max-fps=60"
+check "sound on this computer by default" eval 'file_has events "group: Sound: On the phone|On this computer (phone muted) default: On this computer (phone muted)" && ! file_has scrcpy_args "--no-audio"'
+check "one window, no other questions" eval '[[ $(grep -c "^form: Settings for Redmi A3" $FAKE/events) == 1 ]] && ! file_has events "ask: "'
+check "settings saved for the phone" file_has phones.xml 'audio="on" encoder="c2.mtk.avc.encoder"'
+check "  ...no screen saved (there was no choice)" eval '! file_has phones.xml "screen="'
+
+print "== another encoder and the phone's own sound chosen"
+print 'On the phone\nH.265 · software (slow) · c2.android.hevc.encoder' > $C/answers
+run_app $C
+check "scrcpy uses the chosen encoder, no sound" eval 'file_has scrcpy_args "-K --video-codec=h265 --video-encoder=c2.android.hevc.encoder --max-fps=60" && file_has scrcpy_args "--no-audio"'
+check "saved" file_has phones.xml 'audio="off" encoder="c2.android.hevc.encoder"'
+print "== next time: the saved settings are the defaults"
+run_app $C
+check "saved encoder is the default" encoder_group "H.264 · hardware · c2.mtk.avc.encoder  ★ best|H.264 · software (slow) · c2.android.avc.encoder|H.265 · software (slow) · c2.android.hevc.encoder default: H.265 · software (slow) · c2.android.hevc.encoder"
+check "saved sound is the default" file_has events "default: On the phone"
+check "scrcpy got them" eval 'file_has scrcpy_args "--video-encoder=c2.android.hevc.encoder" && file_has scrcpy_args "--no-audio"'
+
+print "== settings are per phone"
+print 'usbX|XXX9999|Redmi A3||10.0.0.50|5555\nusbY|YYY1212|Pixel 6||10.0.0.51|5555' > $C/usb
+print 'Pixel 6 — USB' > $C/choice
+unset FAKE_ENCODERS
+run_app $C
+check "the other phone gets its own defaults" eval 'encoder_group "H.265 · hardware · c2.fake.hevc.encoder  ★ best|H.264 · hardware · c2.fake.avc.encoder|H.264 · software (slow) · c2.android.avc.encoder default: H.265 · hardware · c2.fake.hevc.encoder  ★ best" && file_has events "default: On this computer (phone muted)"'
+check "the first phone's settings kept" file_has phones.xml 'id="XXX9999" name="Redmi A3" eth="" wifi="10.0.0.50" audio="off" encoder="c2.android.hevc.encoder"'
+rm -f $C/choice
+
+print "== DeX: what to show is saved, and kept while undocked"
+print 'usbX|XXX9999|Redmi A3||10.0.0.50|5555' > $C/usb
+export FAKE_DEX_DISPLAY=2 FAKE_ENCODERS=redmi
+print 'Phone screen' > $C/answers
+run_app $C
+check "phone screen chosen and saved" eval 'file_has scrcpy_args "--max-size=1600" && file_has phones.xml "screen=\"phone\""'
+run_app $C
+check "  ...the default next time (not DeX)" file_has events "group: Show: Phone screen|DeX default: Phone screen"
+print 'DeX' > $C/answers
+run_app $C
+check "DeX chosen" eval 'file_has scrcpy_args "--display-id=2" && file_has phones.xml "screen=\"dex\""'
+unset FAKE_DEX_DISPLAY
+run_app $C
+check "undocked: no choice, DeX stays saved" eval '! file_has events "group: Show:" && file_has phones.xml "screen=\"dex\""'
+
+print "== encoders not listed: H.265 as before, no encoder menu"
+export FAKE_ENCODERS=none
+run_app $C
+check "no encoder menu" eval '! file_has events "group: Video encoder:"'
+check "scrcpy picks its own H.265 encoder" eval 'file_has scrcpy_args "-K --video-codec=h265 --max-fps=60" && ! file_has scrcpy_args "--video-encoder"'
+check "saved encoder kept" file_has phones.xml 'encoder="c2.android.hevc.encoder"'
+unset FAKE_ENCODERS
+
+print "== Cancel in the settings window"
+: > $C/cancel_settings
+run_app $C
+check "stopped, scrcpy not started" eval 'no_file $C/scrcpy_args && ! logged_line "Starting (attempt"'
+rm -f $C/cancel_settings
+unset FAKE_MAKER
 
 # ==== reopened while an earlier run hangs ====
 C=$WORK/reopen; mkdir -p $C

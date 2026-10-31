@@ -24,7 +24,7 @@ end user installs nothing and never opens a terminal.
   interfaces on both, packaged next to the script as `platform/`. The script sources
   `env.sh` and runs the rest as `zsh -f platform/<name>.sh …` (logged):
   `env.sh` (paths, tools, files, `OS_INFO`), `unquarantine`, `ask_question`,
-  `choose_item`, `show_alert`, `run_with_timeout`, `port_open`, `run_scrcpy`,
+  `choose_item`, `settings_form`, `show_alert`, `run_with_timeout`, `port_open`, `run_scrcpy`,
   `picture_up`, `stop_scrcpy`, `stop_previous`, `stop_tree`, `bring_to_front`, `status_window`.
 - Opening the app again stops the previous run if it's still going (`stopPreviousRun`:
   pid in `$TMPDIR/PhoneConnect.pid`; TERM to its process tree so it cleans up, after 5 s
@@ -128,7 +128,8 @@ end user installs nothing and never opens a terminal.
 
 Several phones are remembered, in XML: `~/.phoneconnect_phones.xml` on Mac (read with
 the system's `xmllint`), `%APPDATA%\PhoneConnect\phones.xml` on Windows.
-`<phone id name eth wifi>`, most recently used first.
+`<phone id name eth wifi [screen audio encoder]>`, most recently used first. The
+optional attributes are the settings last chosen for that phone (see Settings below).
 - A phone is identified by `ro.serialno` (fallbacks `ro.boot.serialno`, `android_id`),
   not the model — two phones can be the same model. `adb get-serialno` is no good: over
   the network it returns `ip:5555`. Name = `device_name` setting, else the model.
@@ -160,12 +161,27 @@ Connection, in order of preference: **USB → Ethernet → Wi-Fi**.
 
 scrcpy options in use: `-K` (UHID keyboard: real-keyboard mode so the phone's own
 layouts work, which non-English languages need; the language switch is the phone's
-shortcut, and macOS's own Ctrl+Space must be turned off), `--video-codec=h265`, `--max-fps=60`,
+shortcut, and macOS's own Ctrl+Space must be turned off), `--video-codec=… --video-encoder=…`
+(from the settings), `--max-fps=60`,
 `--video-codec-options=bitrate-mode:int=1` (VBR: the bit rate is an average, peaks allowed;
 seemed a bit smoother when scrolling; Samsung ignores `repeat-previous-frame-after`, so the
 stream is 0 fps when the screen is still),
-`--max-size=1600` and 6M bitrate for the phone screen, 8M for DeX (real or headless). Audio is asked
-each launch. DeX = any display id other than 0 (asks DeX vs phone screen).
+`--max-size=1600` and 6M bitrate for the phone screen, 8M for DeX (real or headless).
+DeX = any display id other than 0.
+
+Settings: one window each launch (`askSettings`, platform `settings_form`: a pop-up
+menu per group; Mac an NSAlert through AppleScriptObjC, because JXA can't make the
+bold item; Windows WinForms), remembered per phone in phones.xml and the defaults next time:
+- Show: phone screen / DeX / headless, only when there's a choice (saved only then, so
+  an undocked phone keeps DeX). Unsaved default: DeX if connected, else the phone screen
+  (headless is never the default unless saved; the warning still shows every time).
+- Sound: on the phone (`--no-audio`) / on this computer (default).
+- Video encoder: from `scrcpy --list-displays --list-encoders` (one call, no extra cost),
+  aliases dropped, only h264/h265/av1, sorted best first and the first marked "★ best"
+  (bold): hardware H.265 > H.264 > AV1, then software. Why: the Redmi A3 (MediaTek) has
+  no hardware H.265 encoder; asking for h265 got Google's software `c2.android.hevc.encoder`,
+  whose limits made scrcpy shrink the picture to 222x512, and it lagged. Hardware H.264
+  there: 698x1600 at ~55 fps. No list → `--video-codec=h265` as before.
 
 Things tried and **rejected**:
 - `-S` (turn phone screen off): some phones (Samsung) throttle rendering → choppy.

@@ -30,6 +30,7 @@ print -r -- "       $OS_INFO"
 print "== dialogs (PowerShell code parses)"
 check "ask_question" eval 'PC_PS_CHECK=1 plat ask_question "Question?" "No" "Yes"'
 check "choose_item" eval 'PC_PS_CHECK=1 plat choose_item "Which?" "b" "a" "b"'
+check "settings_form" eval 'PC_PS_CHECK=1 plat settings_form "Settings" "Show:" "b" "$(print "a\nb ★ best")" "Sound:" "x" "x"'
 check "show_alert" eval 'PC_PS_CHECK=1 plat show_alert "title" "message"'
 check "unquarantine" eval 'PC_PS_CHECK=1 plat unquarantine'
 

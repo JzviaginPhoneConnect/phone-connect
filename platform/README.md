@@ -15,6 +15,7 @@ comes out on stdout, success or failure is the exit code.
 | `unquarantine.sh` | — | `xattr -dr com.apple.quarantine` on the bundle | `Unblock-File` on the app folder, once per version |
 | `ask_question.sh` | `text button1 button2` → the button, empty = Cancel | `osascript display dialog` | WinForms dialog |
 | `choose_item.sh` | `prompt default item…` → the item, empty = Cancel | `osascript choose from list` | WinForms list |
+| `settings_form.sh` | `title {label default items(one per line)}…` → the chosen item of each group, one per line, empty = Cancel; an item with ★ is bold | NSAlert with pop-up menus (AppleScriptObjC) | WinForms drop-down lists |
 | `show_alert.sh` | `title message`, waits for OK | `osascript display alert` | MessageBox |
 | `run_with_timeout.sh` | `seconds command…` → the command's output and exit code | `perl` alarm | `timeout` |
 | `port_open.sh` | `ip port` → exit 0 if something answers (≤ 2 s) | `nc -z -G 2` | `TcpClient`, 2 s |
