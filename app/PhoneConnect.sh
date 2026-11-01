@@ -43,7 +43,8 @@ PORT=5555                        # adb's network port on the phone
 
 # ---- Results the steps hand to each other ----
 typeset -a P_ID P_NAME P_ETH P_WIFI   # saved phones (see "Saved phones")
-typeset -a P_SCREEN P_AUDIO P_ENCODER # their saved settings: phone|dex|virtual, on|off, encoder name
+typeset -a P_SCREEN P_AUDIO P_ENCODER # their saved settings: phone|dex|virtual, on|off, encoder name,
+typeset -a P_DECODER P_RENDERER       #   sw|hw, render driver (empty: automatic)
 typeset -A USB_OF                     # phone id -> USB serial, for phones plugged in now
 typeset -a USB_SERIALS                # serials of the phones on USB
 MIGRATE=0                             # 1: first run after an older version (old IPs file)
@@ -61,6 +62,8 @@ TASK_SERIAL="" TASK_OPENED=""         # set by reachPhone
 typeset -a E_CODEC E_NAME E_HW        # the phone's video encoders: h264|h265|av1, name, 1 = hardware
 AUDIO=() AUDIO_CHOICE=""              # scrcpy's audio option, and the answer given
 VIDEO=(--video-codec=h265) VIDEO_CHOICE=""   # scrcpy's codec and encoder options, and the answer given
+DECODE=(--hwdec=disabled) DECODE_CHOICE=""    # scrcpy's decoding option, and the answer given
+RENDER=() RENDER_CHOICE=""                    # scrcpy's render driver option, and the answer given
 SCRCPY_JOB=""                         # background job running scrcpy
 NETWORK_BLOCKED=""                    # the phone answered, but the computer kept adb from it
 STATUS_WATCHER=""                     # background loop for the status window
@@ -231,12 +234,12 @@ xmlEscape() {
 
 removePhone() {   # removePhone <index>
   P_ID[$1]=() P_NAME[$1]=() P_ETH[$1]=() P_WIFI[$1]=()
-  P_SCREEN[$1]=() P_AUDIO[$1]=() P_ENCODER[$1]=()
+  P_SCREEN[$1]=() P_AUDIO[$1]=() P_ENCODER[$1]=() P_DECODER[$1]=() P_RENDERER[$1]=()
 }
 
 addPhone() {      # addPhone <id> <name> <eth> <wifi>: at the end, no settings yet
   P_ID+=("$1") P_NAME+=("$2") P_ETH+=("$3") P_WIFI+=("$4")
-  P_SCREEN+=("") P_AUDIO+=("") P_ENCODER+=("")
+  P_SCREEN+=("") P_AUDIO+=("") P_ENCODER+=("") P_DECODER+=("") P_RENDERER+=("")
 }
 
 settingAttributes() {   # settingAttributes <index>: the phone's saved settings as XML attributes
@@ -244,6 +247,8 @@ settingAttributes() {   # settingAttributes <index>: the phone's saved settings 
   [[ -n "${P_SCREEN[i]}"  ]] && a+=" screen=\"$(xmlEscape "${P_SCREEN[i]}")\""
   [[ -n "${P_AUDIO[i]}"   ]] && a+=" audio=\"$(xmlEscape "${P_AUDIO[i]}")\""
   [[ -n "${P_ENCODER[i]}" ]] && a+=" encoder=\"$(xmlEscape "${P_ENCODER[i]}")\""
+  [[ -n "${P_DECODER[i]}" ]] && a+=" decoder=\"$(xmlEscape "${P_DECODER[i]}")\""
+  [[ -n "${P_RENDERER[i]}" ]] && a+=" renderer=\"$(xmlEscape "${P_RENDERER[i]}")\""
   print -r -- "$a"
 }
 
@@ -299,13 +304,15 @@ savePhone() {
 }
 
 markUsed() {      # markUsed <id>: move the phone to the top (the default next time)
-  local idx id name eth wifi screen audio encoder
+  local idx id name eth wifi screen audio encoder decoder renderer
   idx=$(phoneIndex "$1") || return
   id=${P_ID[idx]} name=${P_NAME[idx]} eth=${P_ETH[idx]} wifi=${P_WIFI[idx]}
   screen=${P_SCREEN[idx]} audio=${P_AUDIO[idx]} encoder=${P_ENCODER[idx]}
+  decoder=${P_DECODER[idx]} renderer=${P_RENDERER[idx]}
   removePhone $idx
   P_ID=("$id" "${P_ID[@]}") P_NAME=("$name" "${P_NAME[@]}") P_ETH=("$eth" "${P_ETH[@]}") P_WIFI=("$wifi" "${P_WIFI[@]}")
   P_SCREEN=("$screen" "${P_SCREEN[@]}") P_AUDIO=("$audio" "${P_AUDIO[@]}") P_ENCODER=("$encoder" "${P_ENCODER[@]}")
+  P_DECODER=("$decoder" "${P_DECODER[@]}") P_RENDERER=("$renderer" "${P_RENDERER[@]}")
   writeSavedDevices
 }
 
@@ -538,6 +545,16 @@ connectTo() {     # connectTo <ip> -> sets SERIAL on success
   return 1
 }
 
+# reconnect: bring SERIAL back after the connection dropped (network: connect again;
+# USB: wait for the phone up to 10 s)
+reconnect() {
+  if [[ "$SERIAL" == *:* ]]; then
+    connectTo "${SERIAL%:*}"
+  else
+    withTimeout 10 adb -s "$SERIAL" wait-for-device >/dev/null
+  fi
+}
+
 # learnPhone <serial> <id if unreadable> [<ip used> <eth|wifi>]
 # Reads which phone is at SERIAL and its current IPs, and saves them.
 # Sets LEARNED_ID, LEARNED_NAME, LEARNED_ETH.
@@ -694,7 +711,7 @@ startAdbServer() {
 # Read the saved phones; note whether the older single-phone file still has to be moved
 loadSavedDevices() {
   local n i
-  P_ID=() P_NAME=() P_ETH=() P_WIFI=() P_SCREEN=() P_AUDIO=() P_ENCODER=()
+  P_ID=() P_NAME=() P_ETH=() P_WIFI=() P_SCREEN=() P_AUDIO=() P_ENCODER=() P_DECODER=() P_RENDERER=()
   [[ ! -e "$PHONES_FILE" && -e "$OLD_IPS_FILE" ]] && MIGRATE=1 || MIGRATE=0
   [[ -s "$PHONES_FILE" ]] || return 0
   n=$(xmllint --xpath 'count(/phones/phone)' "$PHONES_FILE" 2>/dev/null)
@@ -706,6 +723,8 @@ loadSavedDevices() {
     P_SCREEN+=("$(xmllint --xpath "string(/phones/phone[$i]/@screen)" "$PHONES_FILE" 2>/dev/null)")
     P_AUDIO+=("$(xmllint --xpath "string(/phones/phone[$i]/@audio)" "$PHONES_FILE" 2>/dev/null)")
     P_ENCODER+=("$(xmllint --xpath "string(/phones/phone[$i]/@encoder)" "$PHONES_FILE" 2>/dev/null)")
+    P_DECODER+=("$(xmllint --xpath "string(/phones/phone[$i]/@decoder)" "$PHONES_FILE" 2>/dev/null)")
+    P_RENDERER+=("$(xmllint --xpath "string(/phones/phone[$i]/@renderer)" "$PHONES_FILE" 2>/dev/null)")
   done
   return 0
 }
@@ -968,9 +987,17 @@ connectToChosenDevice() {
 # call, the phone's video encoders (scrcpy can show the picture with), best first ->
 # E_CODEC E_NAME E_HW; aliases (other names for the same encoder) are left out.
 findDisplaysAndEncoders() {
-  local out line
+  local out line try
   showStatus "Looking for a DeX screen…"
-  out=$(LOGGED_LABEL="scrcpy -s $SERIAL --list-displays --list-encoders" runLogged "$SCRCPY" -s "$SERIAL" --list-displays --list-encoders 2>&1)
+  for try in 1 2; do
+    out=$(LOGGED_LABEL="scrcpy -s $SERIAL --list-displays --list-encoders" runLogged "$SCRCPY" -s "$SERIAL" --list-displays --list-encoders 2>&1)
+    # every phone has display 0: no displays at all means the connection dropped
+    # meanwhile (seen over Wi-Fi: "device offline" right after); reconnect, ask again
+    [[ "$out" == *--display-id=* ]] && break
+    (( try == 2 )) && { echo "No display list again: going on without DeX and encoders"; break; }
+    echo "No display list (connection dropped?): reconnecting and asking again"
+    reconnect
+  done
   DEX_ID=$(print -r -- "$out" | grep -o 'display-id=[0-9]*' | cut -d= -f2 | grep -v '^0$' | head -1)
   E_CODEC=() E_NAME=() E_HW=()
   for line in ${(f)out}; do
@@ -1010,6 +1037,19 @@ encoderLabel() {  # encoderLabel <index>: how an encoder is listed in the settin
   fi
 }
 
+rendererLabel() {  # rendererLabel <SDL render driver>: how it's listed in the settings
+  case $1 in
+    metal)      print -r -- "Metal" ;;
+    opengl)     print -r -- "OpenGL" ;;
+    opengles2)  print -r -- "OpenGL ES 2" ;;
+    direct3d11) print -r -- "Direct3D 11" ;;
+    direct3d12) print -r -- "Direct3D 12" ;;
+    direct3d)   print -r -- "Direct3D 9" ;;
+    software)   print -r -- "Software (CPU)" ;;
+    *)          print -r -- "$1" ;;
+  esac
+}
+
 # Without a DeX display: can the phone run its desktop headless, on a display scrcpy
 # creates (--new-display)? Samsung renders DeX there from One UI 8, other phones their
 # desktop mode from Android 16. Only reads the phone's version; changes no settings.
@@ -1038,13 +1078,19 @@ checkVirtualDesktop() {
 #   Sound          on the phone, or on this computer
 #   Video encoder  every encoder the phone has; the best one is marked ★ (and bold) and
 #                  is the default until another one was chosen
+#   Decoding       on this computer's CPU (software) or its GPU (hardware); software
+#                  looked smoother on a Mac (VideoToolbox) and costs little CPU
+#   Renderer       how the window draws: automatic (SDL's choice) or one of this
+#                  computer's render drivers (RENDER_DRIVERS from the platform)
 # Without saved settings: DeX if it's connected, else the phone screen; sound on this
-# computer.
-# -> TARGET, AUDIO, AUDIO_CHOICE, VIDEO, VIDEO_CHOICE
+# computer; software decoding; automatic renderer.
+# -> TARGET, AUDIO, AUDIO_CHOICE, VIDEO, VIDEO_CHOICE, DECODE, DECODE_CHOICE, RENDER,
+#    RENDER_CHOICE
 askSettings() {
-  local idx i choice show sound encoder
-  local -a screens encoders groups answers
+  local idx i j choice show sound encoder decoding renderer driver
+  local -a screens encoders renderers groups answers
   local sound_off="On the phone" sound_on="On this computer (phone muted)"
+  local decode_sw="Software" decode_hw="Hardware (GPU)" automatic="Automatic"
   idx=$(phoneIndex "$CHOSEN_ID")
   screens=("Phone screen")
   [[ -n "$DEX_ID" ]] && screens+=("DeX")
@@ -1063,17 +1109,30 @@ askSettings() {
     [[ -n "$idx" && "${E_NAME[i]}" == "${P_ENCODER[idx]}" ]] && encoder=${encoders[i]}
   done
   encoder=${encoder:-${encoders[1]}}
+  [[ "${idx:+${P_DECODER[idx]}}" == hw ]] && decoding=$decode_hw || decoding=$decode_sw
+  renderers=("$automatic")
+  renderer=$automatic
+  for driver in "${RENDER_DRIVERS[@]}"; do
+    renderers+=("$(rendererLabel $driver)")
+    # a saved driver this computer doesn't have (the phone was used from the other OS): automatic
+    [[ -n "$idx" && "$driver" == "${P_RENDERER[idx]}" ]] && renderer=${renderers[-1]}
+  done
 
   while true; do
     groups=()
     (( ${#screens} > 1 )) && groups+=("Show:" "$show" "" "${(pj:\n:)screens}")
     groups+=("Sound:" "$sound" "" "$sound_off"$'\n'"$sound_on")
     (( ${#encoders} )) && groups+=("Video encoder:" "$encoder" "${encoders[1]}" "${(pj:\n:)encoders}")
+    groups+=("Decoding:" "$decoding" "$decode_sw" "$decode_sw"$'\n'"$decode_hw")
+    groups+=("Renderer:" "$renderer" "" "${(pj:\n:)renderers}")
     showStatus "Choose the settings…"
     answers=(${(f)"$(settingsForm "Settings for ${PHONE_NAME} — remembered for this phone." "Start" "Cancel" "${groups[@]}")"})
     (( ${#answers} )) || return 2   # Cancel
     (( ${#screens} > 1 )) && { show=${answers[1]}; shift answers; }
-    sound=${answers[1]} encoder=${answers[2]}
+    sound=${answers[1]}
+    shift answers
+    (( ${#encoders} )) && { encoder=${answers[1]}; shift answers; }
+    decoding=${answers[1]} renderer=${answers[2]}
     [[ "$show" == "$VIRTUAL_DESKTOP" && -n "$show" ]] || break
     # "Go back" is the default button
     choice=$(askQuestion "${VIRTUAL_DESKTOP% \(experimental\)} is experimental.
@@ -1100,11 +1159,19 @@ askSettings() {
   else
     VIDEO_CHOICE="the phone's default H.265 (its encoders weren't listed)"
   fi
+  DECODE_CHOICE=$decoding
+  [[ "$decoding" == "$decode_hw" ]] && DECODE=(--hwdec=auto) || DECODE=(--hwdec=disabled)
+  RENDER_CHOICE=$renderer
+  j=${renderers[(ie)$renderer]}   # 1 is Automatic, the drivers follow
+  (( j > 1 )) && driver=${RENDER_DRIVERS[j - 1]} || driver=""
+  [[ -n "$driver" ]] && RENDER=(--render-driver=$driver) || RENDER=()
   # Remember them; what to show only if there was a choice (an undocked phone keeps DeX)
   if [[ -n "$idx" ]]; then
     (( ${#screens} > 1 )) && P_SCREEN[idx]=$TARGET
     [[ "$sound" == "$sound_on" ]] && P_AUDIO[idx]=on || P_AUDIO[idx]=off
     (( ${#E_NAME} )) && P_ENCODER[idx]=${E_NAME[i]}
+    [[ "$decoding" == "$decode_hw" ]] && P_DECODER[idx]=hw || P_DECODER[idx]=sw
+    P_RENDERER[idx]=$driver
     writeSavedDevices
   fi
   return 0
@@ -1173,8 +1240,9 @@ runScrcpyWithRetries() {
   # VIDEO: the codec and encoder chosen in the settings
   # bitrate-mode=1: variable bit rate. The bit rate is an average, so frames with a lot
   # of motion (scrolling) may use more instead of being held back.
-  local -a common=(-s "$SERIAL" -K "${VIDEO[@]}" --max-fps=60 --video-codec-options=bitrate-mode:int=1 -V debug "${AUDIO[@]}")
+  local -a common=(-s "$SERIAL" -K "${VIDEO[@]}" --max-fps=60 --video-codec-options=bitrate-mode:int=1 -V debug "${AUDIO[@]}" "${DECODE[@]}" "${RENDER[@]}")
   echo "Video encoder: $VIDEO_CHOICE"
+  echo "Decoding: $DECODE_CHOICE; renderer: $RENDER_CHOICE"
   if [[ "$TARGET" == "dex" ]]; then
     echo "Mirroring DeX (display $DEX_ID), audio: $AUDIO_CHOICE"
     args=("${common[@]}" --display-id="$DEX_ID" --video-bit-rate=8M

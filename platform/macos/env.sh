@@ -23,6 +23,8 @@ OLD_IPS_FILE="$HOME/.phoneconnect_ips"    # older versions: lines "eth <ip>" and
 LOG_FILE=/tmp/PhoneConnect.log
 export TMPDIR=${TMPDIR:-/tmp}
 OS_INFO="macOS $(sw_vers -productVersion) ($MAC_ARCH)"
+# the render drivers offered in the settings (scrcpy --render-driver), besides "Automatic"
+RENDER_DRIVERS=(metal opengl software)
 # what to do when the computer blocks PhoneConnect from the local network (adb gets
 # "No route to host" where the phone answers)
 NETWORK_BLOCKED_HELP="Turn on PhoneConnect in System Settings → Privacy & Security → Local Network, then open PhoneConnect again."

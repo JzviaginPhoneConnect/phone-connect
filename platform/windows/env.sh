@@ -24,6 +24,8 @@ export TMPDIR="$(cygpath -u "$TEMP")"
 export TMPPREFIX="$TMPDIR/zsh"     # zsh's own temporary files (here-documents)
 LOG_FILE="$TMPDIR/PhoneConnect.log"
 OS_INFO="Windows ${$(uname -s)#*_NT-} (${PROCESSOR_ARCHITEW6432:-$PROCESSOR_ARCHITECTURE})"
+# the render drivers offered in the settings (scrcpy --render-driver), besides "Automatic"
+RENDER_DRIVERS=(direct3d11 direct3d12 direct3d opengl software)
 # what to do when the computer blocks PhoneConnect from the local network (adb gets
 # "No route to host" where the phone answers)
 NETWORK_BLOCKED_HELP="Allow PhoneConnect (adb.exe) in Windows Firewall or your security software, then open PhoneConnect again."
