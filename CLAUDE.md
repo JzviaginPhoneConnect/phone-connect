@@ -128,7 +128,8 @@ end user installs nothing and never opens a terminal.
 
 Several phones are remembered, in XML: `~/.phoneconnect_phones.xml` on Mac (read with
 the system's `xmllint`), `%APPDATA%\PhoneConnect\phones.xml` on Windows.
-`<phone id name eth wifi [screen audio encoder decoder renderer]>`, most recently used first. The
+`<phone id name eth wifi [screen audio encoder decoder renderer phone_size dex_size
+virtual_size phone_bitrate dex_bitrate virtual_bitrate fps]>`, most recently used first. The
 optional attributes are the settings last chosen for that phone (see Settings below).
 - A phone is identified by `ro.serialno` (fallbacks `ro.boot.serialno`, `android_id`),
   not the model — two phones can be the same model. `adb get-serialno` is no good: over
@@ -162,18 +163,21 @@ Connection, in order of preference: **USB → Ethernet → Wi-Fi**.
 scrcpy options in use: `-K` (UHID keyboard: real-keyboard mode so the phone's own
 layouts work, which non-English languages need; the language switch is the phone's
 shortcut, and macOS's own Ctrl+Space must be turned off), `--video-codec=… --video-encoder=…`
-(from the settings), `--max-fps=60`,
+(from the settings), `--max-fps=60` (default; from the settings),
 `--video-codec-options=bitrate-mode:int=1` (VBR: the bit rate is an average, peaks allowed;
 seemed a bit smoother when scrolling; Samsung ignores `repeat-previous-frame-after`, so the
 stream is 0 fps when the screen is still),
-`--max-size=1600` and 6M bitrate for the phone screen, 8M for DeX (real or headless).
+size and bit rate from the settings (defaults: `--max-size=1600` and 6M for the phone
+screen; DeX native and headless `1920x1080/160` at 8M).
 DeX = any display id other than 0.
 
-Settings: one window each launch (`askSettings`, platform `settings_form`: a pop-up
+Settings: each launch (`askSettings`, platform `settings_form`: a pop-up
 menu per group; Mac an NSAlert through AppleScriptObjC, because JXA can't make the
 bold item; Windows WinForms; display only: the script passes the text, button captions,
 and per group the label, default, bold item and items), remembered per phone in phones.xml
-and the defaults next time:
+and the defaults next time. Two windows, because the sizes depend on the screen: first
+"what to show" (Next/Cancel, only with a choice), then the settings for that screen
+(Start/Back; Start/Cancel without the first window):
 - Show: phone screen / DeX / headless, only when there's a choice (saved only then, so
   an undocked phone keeps DeX). Unsaved default: DeX if connected, else the phone screen
   (headless is never the default unless saved; the warning still shows every time).
@@ -194,6 +198,13 @@ and the defaults next time:
 - Renderer: Automatic (no `--render-driver`, SDL's choice: Metal / Direct3D 11) or one of
   the platform's `RENDER_DRIVERS` (data in `env.sh`; labels in the main script). A saved
   driver the computer doesn't list → Automatic.
+- Resolution (`sizeChoices`), per screen: phone screen `--max-size` 2400…800 below the
+  screen's long side, labelled portrait with the size it gives (sizes from
+  `--list-displays`, e.g. `(1080x2316)`), default 1600; DeX Native (no `--max-size`) or
+  1600/1280 landscape; headless `--new-display` 1280x720…3840x2160 at 160 dpi per 1080
+  high. A saved size not offered now → that screen's default.
+- Bit rate per screen 2…32M (6M phone screen, 8M DeX/headless); frame rate 30/60/90/120 or
+  Unlimited (no `--max-fps`), one per phone.
 
 Things tried and **rejected**:
 - `-S` (turn phone screen off): some phones (Samsung) throttle rendering → choppy.

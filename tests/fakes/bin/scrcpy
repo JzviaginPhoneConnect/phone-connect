@@ -28,7 +28,9 @@ case " $* " in
     fi
     [[ " $* " == *" --list-encoders "* ]] && encoders
     print "[server] INFO: List of displays:"
-    print "    --display-id=0"; [[ -n $FAKE_DEX_DISPLAY ]] && print "    --display-id=$FAKE_DEX_DISPLAY"; exit 0 ;;
+    # sizes: the phone screen 1080x2400 (FAKE_PHONE_SIZE), DeX 1920x1080
+    print "    --display-id=0    (${FAKE_PHONE_SIZE:-1080x2400})"
+    [[ -n $FAKE_DEX_DISPLAY ]] && print "    --display-id=$FAKE_DEX_DISPLAY    (1920x1080)"; exit 0 ;;
   *" --version "*) print "scrcpy 0.0 (fake)"; exit 0 ;;
 esac
 print -r -- "$*" > $FAKE/scrcpy_args

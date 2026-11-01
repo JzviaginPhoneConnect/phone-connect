@@ -56,12 +56,15 @@ The newest version is on the [Releases page](../../releases/latest). Older versi
 When you open PhoneConnect:
 
 1. **It finds the phone.** It tries a **USB** cable first, then **Ethernet** (a USB-C dock with a network port), then **Wi-Fi**. The window title shows which one it used, for example *PhoneConnect (Ethernet)*.
-2. **It shows the settings** in one window, remembered for each phone:
-   - **Show:** **DeX** or the **phone screen** (only when a DeX screen is connected, or the phone can run DeX/desktop mode headless).
+2. **It asks what to show:** **DeX** or the **phone screen** (only when a DeX screen is connected, or the phone can run DeX/desktop mode headless).
+3. **It shows the settings** for that screen, remembered for each phone:
    - **Sound:** on the phone, or on the computer (the phone's own speaker is then muted).
    - **Video encoder:** the phone's video encoders, the best one marked ★. Phones without a hardware H.265 encoder (e.g. Redmi A3) get hardware H.264; H.265 done in software is slow and blurry.
    - **Decoding:** on the computer's processor (software, the default: smoother) or its graphics chip (hardware).
    - **Renderer:** how the window is drawn: automatic, or e.g. Metal/OpenGL on a Mac, Direct3D/OpenGL on Windows.
+   - **Resolution:** native or smaller (portrait sizes for the phone screen, landscape for DeX), remembered separately for each.
+   - **Bit rate:** 2 to 32 Mbit/s (6 for the phone screen, 8 for DeX by default), remembered separately for each.
+   - **Frame rate:** 30 to 120 fps, or unlimited (60 by default).
 4. **The phone opens in a window.** If no picture arrives within 15 seconds, it restarts the connection by itself, up to 3 tries.
 
 **Going cable-free.** Whenever the phone is plugged in, PhoneConnect switches on the phone's network mode and remembers its Wi-Fi and Ethernet addresses. After that you can unplug, and the next launches connect over the network. The phone forgets network mode when it **restarts**, so plug it in once after each restart.

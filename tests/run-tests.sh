@@ -66,7 +66,7 @@ check() {         # check <description> <command...>
 }
 logged_line()  { run_log | grep -qF -- "$1"; }
 # phones.xml without the saved settings (screen, audio, encoder: checked on their own)
-phones_xml()   { sed -E 's/ (screen|audio|encoder|decoder|renderer)="[^"]*"//g' $FAKE/phones.xml; }
+phones_xml()   { sed -E 's/ (screen|audio|encoder|decoder|renderer|(phone|dex|virtual)_(size|bitrate)|fps)="[^"]*"//g' $FAKE/phones.xml; }
 xml_is()       { [[ "$(phones_xml)" == "$1" ]] || { print -r -- "       got:"; sed 's/^/       /' $FAKE/phones.xml; return 1; } }
 file_has()     { [[ -f $FAKE/$1 ]] && grep -qF -- "$2" $FAKE/$1; }
 no_file()      { [[ ! -e $1 ]]; }
@@ -226,7 +226,7 @@ rm -f $C/settings
 print "== Go back, then the phone screen"
 print 'DeX headless (experimental)\nGo back\nPhone screen' > $C/answers
 run_app $C
-check "settings shown again after Go back" eval '[[ $(grep -c "^form: " $FAKE/events) == 2 ]]'
+check "what to show asked again after Go back" eval '[[ $(grep -c "^form: What to show" $FAKE/events) == 2 && $(grep -c "^form: Settings for" $FAKE/events) == 1 ]]'
 check "phone screen mirrored" file_has scrcpy_args "--max-size=1600"
 check "nothing done to the phone" eval '! file_has events "settings " && ! file_has events "systemui" && ! file_has events "windowing mode" && no_tasks'
 
@@ -391,6 +391,70 @@ run_app $C
 check "still nothing: goes on without encoders" eval 'logged_line "No display list again" && ! file_has events "group: Video encoder:" && file_has scrcpy_args "--video-codec=h265"'
 rm -f $C/list_drops $C/net
 print 'usbX|XXX9999|Redmi A3||10.0.0.50|5555' > $C/usb
+
+# ==== resolution, bit rate, frame rate (per screen) ====
+print "== phone screen: sizes from the phone's screen, defaults as before"
+rm -f $C/phones.xml $C/answers
+print 'usbX|XXX9999|Redmi A3||10.0.0.50|5555' > $C/usb
+run_app $C
+check "one window (no screen choice): Start / Cancel" eval '! file_has events "form: What to show" && file_has events "buttons: Start Cancel"'
+check "portrait sizes below the screen's, labelled with the picture size" file_has events "group: Resolution: Native (1080x2400)|864x1920|720x1600|576x1280|460x1024|360x800 default: 720x1600"
+check "bit rates, default 6" file_has events "group: Bit rate: 2 Mbit/s|4 Mbit/s|6 Mbit/s|8 Mbit/s|12 Mbit/s|16 Mbit/s|24 Mbit/s|32 Mbit/s default: 6 Mbit/s"
+check "frame rates, default 60" file_has events "group: Frame rate: 30 fps|60 fps|90 fps|120 fps|Unlimited default: 60 fps"
+check "logged" logged_line "Resolution: 720x1600; bit rate: 6M; frame rate: 60 fps"
+print 'Native (1080x2400)\n16 Mbit/s\nUnlimited' > $C/answers
+run_app $C
+check "native, 16M, unlimited fps" eval 'file_has scrcpy_args "--video-bit-rate=16M" && ! file_has scrcpy_args "--max-size" && ! file_has scrcpy_args "--max-fps"'
+check "  ...saved" file_has phones.xml 'phone_size="native" phone_bitrate="16M" fps="unlimited"'
+run_app $C
+check "  ...the defaults next time" eval 'file_has events "default: Native (1080x2400)" && file_has events "default: 16 Mbit/s" && file_has events "default: Unlimited"'
+print '864x1920\n120 fps' > $C/answers
+run_app $C
+check "1920 and 120 fps" eval 'file_has scrcpy_args "--max-fps=120" && file_has scrcpy_args "--max-size=1920 --video-bit-rate=16M"'
+print "== a smaller phone screen: only smaller sizes, a saved bigger one falls back"
+export FAKE_PHONE_SIZE=2400x1080   # turned sideways right now: still listed as portrait
+sed -i.bak 's/phone_size="1920"/phone_size="2400"/' $C/phones.xml
+run_app $C
+check "portrait, sizes below 2400" file_has events "group: Resolution: Native (1080x2400)|864x1920|"
+export FAKE_PHONE_SIZE=720x1600
+run_app $C
+check "only sizes below 1600; saved 2400 not offered: the default (native, as 1600 isn't offered)" file_has events "group: Resolution: Native (720x1600)|576x1280|460x1024|360x800 default: Native (720x1600)"
+unset FAKE_PHONE_SIZE
+sed -i.bak 's/phone_size="[^"]*"/phone_size="1920"/' $C/phones.xml   # back to 1920 for what follows
+
+print "== DeX: first what to show, then landscape sizes; per-screen bit rate"
+rm -f $C/answers
+export FAKE_DEX_DISPLAY=2
+print 'DeX' > $C/answers
+run_app $C
+check "what to show first (Next / Cancel), then settings with Back" eval 'file_has events "form: What to show from Redmi A3?" && file_has events "buttons: Next Cancel" && file_has events "buttons: Start Back"'
+check "DeX sizes are landscape, native by default" file_has events "group: Resolution: Native (1920x1080)|1600x900|1280x720 default: Native (1920x1080)"
+check "DeX bit rate default 8, not the phone screen's 16" file_has events "group: Bit rate: 2 Mbit/s|4 Mbit/s|6 Mbit/s|8 Mbit/s|12 Mbit/s|16 Mbit/s|24 Mbit/s|32 Mbit/s default: 8 Mbit/s"
+check "scrcpy: DeX at native, 8M; fps is per phone (120)" file_has scrcpy_args "--max-fps=120 --video-codec-options=bitrate-mode:int=1 -V debug --hwdec=disabled --display-id=2 --video-bit-rate=8M"
+print 'DeX\n1280x720\n4 Mbit/s' > $C/answers
+run_app $C
+check "DeX at 1280, 4M" file_has scrcpy_args "--display-id=2 --max-size=1280 --video-bit-rate=4M"
+check "  ...saved for DeX, the phone screen's kept" eval 'file_has phones.xml "dex_size=\"1280\"" && file_has phones.xml "phone_bitrate=\"16M\" dex_bitrate=\"4M\""'
+print 'Phone screen' > $C/answers
+run_app $C
+check "the phone screen still gets its own" eval 'file_has events "default: 864x1920" && file_has scrcpy_args "--max-size=1920 --video-bit-rate=16M"'
+print "== Back in the settings window: what to show again"
+print 'Settings for' > $C/cancel_form
+print 'DeX\nPhone screen' > $C/answers
+run_app $C
+check "asked twice, then the phone screen" eval '[[ $(grep -c "^form: What to show" $FAKE/events) == 2 ]] && file_has scrcpy_args "--max-size=1920"'
+check "  ...logged as Back" logged_line "(DeX) — remembered for this phone. -> Back"
+unset FAKE_DEX_DISPLAY
+
+print "== headless: sizes of the new display"
+export FAKE_ONEUI=80000 FAKE_MAKER=samsung
+print 'DeX headless (experimental)\nContinue\n2560x1440' > $C/answers
+run_app $C
+check "headless sizes, 1920x1080 by default" file_has events "group: Resolution: 1280x720|1600x900|1920x1080|2560x1440|3840x2160 default: 1920x1080"
+check "2560x1440 at 213 dpi, 8M" file_has scrcpy_args "--new-display=2560x1440/213 --video-bit-rate=8M"
+check "  ...saved" eval 'file_has phones.xml "virtual_size=\"2560x1440\"" && file_has phones.xml "virtual_bitrate=\"8M\""'
+unset FAKE_ONEUI FAKE_MAKER
+rm -f $C/answers $C/phones.xml
 
 print "== Cancel in the settings window"
 : > $C/cancel_settings
