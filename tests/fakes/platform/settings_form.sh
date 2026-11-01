@@ -2,10 +2,14 @@
 # Fake: records the window in $FAKE/events ("form: <text>", then per group
 # "group: <label> <item|item…> default: <item>", plus " bold: <item>" if one is bold). For each group it answers with the
 # first line of $FAKE/answers if that's one of the group's items (and takes that line
-# off), else the default. With $FAKE/cancel_settings: Cancel.
+# off), else the default. With $FAKE/cancel_settings: Cancel; with $FAKE/cancel_form:
+# Cancel (or Back) once, in the window whose text starts with that file's text.
+# Also records "buttons: <ok> <cancel>".
 typeset -a items out
 typeset next pick
 print -r -- "form: $1" >> $FAKE/events
+print -r -- "buttons: $2 $3" >> $FAKE/events
+title=$1
 shift 3
 while (( $# >= 4 )); do
   items=("${(@f)4}")
@@ -22,4 +26,5 @@ while (( $# >= 4 )); do
   shift 4
 done
 [[ -e $FAKE/cancel_settings ]] && exit 0
+if [[ -s $FAKE/cancel_form && "$title" == "$(<$FAKE/cancel_form)"* ]]; then rm -f $FAKE/cancel_form; exit 0; fi
 print -rl -- "${out[@]}"

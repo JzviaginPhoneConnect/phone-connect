@@ -44,7 +44,9 @@ PORT=5555                        # adb's network port on the phone
 # ---- Results the steps hand to each other ----
 typeset -a P_ID P_NAME P_ETH P_WIFI   # saved phones (see "Saved phones")
 typeset -a P_SCREEN P_AUDIO P_ENCODER # their saved settings: phone|dex|virtual, on|off, encoder name,
-typeset -a P_DECODER P_RENDERER       #   sw|hw, render driver (empty: automatic)
+typeset -a P_DECODER P_RENDERER       #   sw|hw, render driver (empty: automatic),
+typeset -a P_PHONE_SIZE P_DEX_SIZE P_VIRTUAL_SIZE   # size per screen (max size|native|WxH),
+typeset -a P_PHONE_BITRATE P_DEX_BITRATE P_VIRTUAL_BITRATE P_FPS   # bit rate per screen, fps
 typeset -A USB_OF                     # phone id -> USB serial, for phones plugged in now
 typeset -a USB_SERIALS                # serials of the phones on USB
 MIGRATE=0                             # 1: first run after an older version (old IPs file)
@@ -54,6 +56,8 @@ LINK=""                               # USB, Ethernet, Wi-Fi or Wireless debuggi
 PHONE_NAME=""                         # the chosen phone's name, for messages and the title
 LEARNED_ID="" LEARNED_NAME="" LEARNED_ETH=""   # set by learnPhone
 DEX_ID=""                             # id of the DeX display, if there is one
+PHONE_SIZE="" DEX_SIZE=""             # their sizes (phone: portrait, e.g. 1080x2316), if listed
+typeset -a S_VALUE S_LABEL; S_DEFAULT="" # set by sizeChoices
 VIRTUAL_DESKTOP=""                    # label of the headless desktop option, if the phone supports it
 TARGET="phone"                        # phone, dex or virtual (headless desktop)
 typeset -a T_PHONE T_ACTION T_NS T_KEY T_VALUE  # tasks still to do on phones (see "Tasks")
@@ -64,6 +68,9 @@ AUDIO=() AUDIO_CHOICE=""              # scrcpy's audio option, and the answer gi
 VIDEO=(--video-codec=h265) VIDEO_CHOICE=""   # scrcpy's codec and encoder options, and the answer given
 DECODE=(--hwdec=disabled) DECODE_CHOICE=""    # scrcpy's decoding option, and the answer given
 RENDER=() RENDER_CHOICE=""                    # scrcpy's render driver option, and the answer given
+SIZE=() SIZE_CHOICE=""                        # scrcpy's size option for the chosen screen, and the answer given
+BITRATE=6M                                    # the chosen bit rate
+FPS=(--max-fps=60) FPS_CHOICE=""              # scrcpy's frame rate option, and the answer given
 SCRCPY_JOB=""                         # background job running scrcpy
 NETWORK_BLOCKED=""                    # the phone answered, but the computer kept adb from it
 STATUS_WATCHER=""                     # background loop for the status window
@@ -194,7 +201,7 @@ chooseItem() {
 settingsForm() {
   local answer
   answer=$(platform settings_form "$@")
-  echo "Asked: $1 -> ${${answer//$'\n'/ | }:-Cancel}" >&2
+  echo "Asked: $1 -> ${${answer//$'\n'/ | }:-$3}" >&2   # empty: the second button (Cancel, Back)
   print -r -- "$answer"
 }
 
@@ -235,11 +242,15 @@ xmlEscape() {
 removePhone() {   # removePhone <index>
   P_ID[$1]=() P_NAME[$1]=() P_ETH[$1]=() P_WIFI[$1]=()
   P_SCREEN[$1]=() P_AUDIO[$1]=() P_ENCODER[$1]=() P_DECODER[$1]=() P_RENDERER[$1]=()
+  P_PHONE_SIZE[$1]=() P_DEX_SIZE[$1]=() P_VIRTUAL_SIZE[$1]=()
+  P_PHONE_BITRATE[$1]=() P_DEX_BITRATE[$1]=() P_VIRTUAL_BITRATE[$1]=() P_FPS[$1]=()
 }
 
 addPhone() {      # addPhone <id> <name> <eth> <wifi>: at the end, no settings yet
   P_ID+=("$1") P_NAME+=("$2") P_ETH+=("$3") P_WIFI+=("$4")
   P_SCREEN+=("") P_AUDIO+=("") P_ENCODER+=("") P_DECODER+=("") P_RENDERER+=("")
+  P_PHONE_SIZE+=("") P_DEX_SIZE+=("") P_VIRTUAL_SIZE+=("")
+  P_PHONE_BITRATE+=("") P_DEX_BITRATE+=("") P_VIRTUAL_BITRATE+=("") P_FPS+=("")
 }
 
 settingAttributes() {   # settingAttributes <index>: the phone's saved settings as XML attributes
@@ -249,6 +260,13 @@ settingAttributes() {   # settingAttributes <index>: the phone's saved settings 
   [[ -n "${P_ENCODER[i]}" ]] && a+=" encoder=\"$(xmlEscape "${P_ENCODER[i]}")\""
   [[ -n "${P_DECODER[i]}" ]] && a+=" decoder=\"$(xmlEscape "${P_DECODER[i]}")\""
   [[ -n "${P_RENDERER[i]}" ]] && a+=" renderer=\"$(xmlEscape "${P_RENDERER[i]}")\""
+  [[ -n "${P_PHONE_SIZE[i]}" ]] && a+=" phone_size=\"$(xmlEscape "${P_PHONE_SIZE[i]}")\""
+  [[ -n "${P_DEX_SIZE[i]}" ]] && a+=" dex_size=\"$(xmlEscape "${P_DEX_SIZE[i]}")\""
+  [[ -n "${P_VIRTUAL_SIZE[i]}" ]] && a+=" virtual_size=\"$(xmlEscape "${P_VIRTUAL_SIZE[i]}")\""
+  [[ -n "${P_PHONE_BITRATE[i]}" ]] && a+=" phone_bitrate=\"$(xmlEscape "${P_PHONE_BITRATE[i]}")\""
+  [[ -n "${P_DEX_BITRATE[i]}" ]] && a+=" dex_bitrate=\"$(xmlEscape "${P_DEX_BITRATE[i]}")\""
+  [[ -n "${P_VIRTUAL_BITRATE[i]}" ]] && a+=" virtual_bitrate=\"$(xmlEscape "${P_VIRTUAL_BITRATE[i]}")\""
+  [[ -n "${P_FPS[i]}" ]] && a+=" fps=\"$(xmlEscape "${P_FPS[i]}")\""
   print -r -- "$a"
 }
 
@@ -305,14 +323,22 @@ savePhone() {
 
 markUsed() {      # markUsed <id>: move the phone to the top (the default next time)
   local idx id name eth wifi screen audio encoder decoder renderer
+  local phone_size dex_size virtual_size phone_bitrate dex_bitrate virtual_bitrate fps
   idx=$(phoneIndex "$1") || return
   id=${P_ID[idx]} name=${P_NAME[idx]} eth=${P_ETH[idx]} wifi=${P_WIFI[idx]}
   screen=${P_SCREEN[idx]} audio=${P_AUDIO[idx]} encoder=${P_ENCODER[idx]}
   decoder=${P_DECODER[idx]} renderer=${P_RENDERER[idx]}
+  phone_size=${P_PHONE_SIZE[idx]} dex_size=${P_DEX_SIZE[idx]} virtual_size=${P_VIRTUAL_SIZE[idx]}
+  phone_bitrate=${P_PHONE_BITRATE[idx]} dex_bitrate=${P_DEX_BITRATE[idx]}
+  virtual_bitrate=${P_VIRTUAL_BITRATE[idx]} fps=${P_FPS[idx]}
   removePhone $idx
   P_ID=("$id" "${P_ID[@]}") P_NAME=("$name" "${P_NAME[@]}") P_ETH=("$eth" "${P_ETH[@]}") P_WIFI=("$wifi" "${P_WIFI[@]}")
   P_SCREEN=("$screen" "${P_SCREEN[@]}") P_AUDIO=("$audio" "${P_AUDIO[@]}") P_ENCODER=("$encoder" "${P_ENCODER[@]}")
   P_DECODER=("$decoder" "${P_DECODER[@]}") P_RENDERER=("$renderer" "${P_RENDERER[@]}")
+  P_PHONE_SIZE=("$phone_size" "${P_PHONE_SIZE[@]}") P_DEX_SIZE=("$dex_size" "${P_DEX_SIZE[@]}")
+  P_VIRTUAL_SIZE=("$virtual_size" "${P_VIRTUAL_SIZE[@]}") P_FPS=("$fps" "${P_FPS[@]}")
+  P_PHONE_BITRATE=("$phone_bitrate" "${P_PHONE_BITRATE[@]}") P_DEX_BITRATE=("$dex_bitrate" "${P_DEX_BITRATE[@]}")
+  P_VIRTUAL_BITRATE=("$virtual_bitrate" "${P_VIRTUAL_BITRATE[@]}")
   writeSavedDevices
 }
 
@@ -712,6 +738,7 @@ startAdbServer() {
 loadSavedDevices() {
   local n i
   P_ID=() P_NAME=() P_ETH=() P_WIFI=() P_SCREEN=() P_AUDIO=() P_ENCODER=() P_DECODER=() P_RENDERER=()
+  P_PHONE_SIZE=() P_DEX_SIZE=() P_VIRTUAL_SIZE=() P_PHONE_BITRATE=() P_DEX_BITRATE=() P_VIRTUAL_BITRATE=() P_FPS=()
   [[ ! -e "$PHONES_FILE" && -e "$OLD_IPS_FILE" ]] && MIGRATE=1 || MIGRATE=0
   [[ -s "$PHONES_FILE" ]] || return 0
   n=$(xmllint --xpath 'count(/phones/phone)' "$PHONES_FILE" 2>/dev/null)
@@ -725,6 +752,13 @@ loadSavedDevices() {
     P_ENCODER+=("$(xmllint --xpath "string(/phones/phone[$i]/@encoder)" "$PHONES_FILE" 2>/dev/null)")
     P_DECODER+=("$(xmllint --xpath "string(/phones/phone[$i]/@decoder)" "$PHONES_FILE" 2>/dev/null)")
     P_RENDERER+=("$(xmllint --xpath "string(/phones/phone[$i]/@renderer)" "$PHONES_FILE" 2>/dev/null)")
+    P_PHONE_SIZE+=("$(xmllint --xpath "string(/phones/phone[$i]/@phone_size)" "$PHONES_FILE" 2>/dev/null)")
+    P_DEX_SIZE+=("$(xmllint --xpath "string(/phones/phone[$i]/@dex_size)" "$PHONES_FILE" 2>/dev/null)")
+    P_VIRTUAL_SIZE+=("$(xmllint --xpath "string(/phones/phone[$i]/@virtual_size)" "$PHONES_FILE" 2>/dev/null)")
+    P_PHONE_BITRATE+=("$(xmllint --xpath "string(/phones/phone[$i]/@phone_bitrate)" "$PHONES_FILE" 2>/dev/null)")
+    P_DEX_BITRATE+=("$(xmllint --xpath "string(/phones/phone[$i]/@dex_bitrate)" "$PHONES_FILE" 2>/dev/null)")
+    P_VIRTUAL_BITRATE+=("$(xmllint --xpath "string(/phones/phone[$i]/@virtual_bitrate)" "$PHONES_FILE" 2>/dev/null)")
+    P_FPS+=("$(xmllint --xpath "string(/phones/phone[$i]/@fps)" "$PHONES_FILE" 2>/dev/null)")
   done
   return 0
 }
@@ -999,6 +1033,9 @@ findDisplaysAndEncoders() {
     reconnect
   done
   DEX_ID=$(print -r -- "$out" | grep -o 'display-id=[0-9]*' | cut -d= -f2 | grep -v '^0$' | head -1)
+  PHONE_SIZE=$(displaySize 0 "$out") DEX_SIZE=${DEX_ID:+$(displaySize "$DEX_ID" "$out")}
+  # the phone screen as portrait, whichever way the phone is turned now
+  [[ -n "$PHONE_SIZE" ]] && (( ${PHONE_SIZE%x*} > ${PHONE_SIZE#*x} )) && PHONE_SIZE=${PHONE_SIZE#*x}x${PHONE_SIZE%x*}
   E_CODEC=() E_NAME=() E_HW=()
   for line in ${(f)out}; do
     [[ "$line" == *alias* ]] && continue
@@ -1007,6 +1044,7 @@ findDisplaysAndEncoders() {
     [[ "${match[3]}" == sw ]] && E_HW+=(0) || E_HW+=(1)
   done
   sortEncoders
+  echo "Displays: phone screen ${PHONE_SIZE:-size unknown}${DEX_ID:+, DeX $DEX_ID ${DEX_SIZE:-size unknown}}"
   echo "Video encoders: ${(j:, :)E_NAME:-none}"
   return 0
 }
@@ -1050,6 +1088,48 @@ rendererLabel() {  # rendererLabel <SDL render driver>: how it's listed in the s
   esac
 }
 
+# displaySize <id> <scrcpy --list-displays output>: e.g. 1080x2316 (empty if not listed)
+displaySize() {
+  print -r -- "$2" | sed -n "s/.*--display-id=$1 *(\([0-9]*x[0-9]*\)).*/\1/p" | head -1
+}
+
+# sizeChoices <phone|dex|virtual>: the resolutions offered for that screen
+#   -> S_VALUE (what's saved: native, a max size, or WxH for headless), S_LABEL, S_DEFAULT
+# Phone screen and DeX: scrcpy --max-size (the long side), only sizes smaller than the
+# screen; each labelled with the size it gives. Headless: the size of the new display.
+sizeChoices() {
+  local size n v long short
+  local -a maxes
+  S_VALUE=() S_LABEL=()
+  case $1 in
+    virtual)
+      S_VALUE=(1280x720 1600x900 1920x1080 2560x1440 3840x2160) S_LABEL=("${S_VALUE[@]}")
+      S_DEFAULT=1920x1080
+      return ;;
+    phone) size=$PHONE_SIZE maxes=(2400 1920 1600 1280 1024 800) S_DEFAULT=1600 ;;
+    *)     size=$DEX_SIZE   maxes=(1600 1280)                    S_DEFAULT=native ;;
+  esac
+  S_VALUE=(native) S_LABEL=("Native${size:+ ($size)}")
+  if [[ -n "$size" ]]; then
+    long=${size%x*} short=${size#*x}
+    (( long < short )) && { long=${size#*x} short=${size%x*}; }
+  fi
+  for n in "${maxes[@]}"; do
+    if [[ -n "$size" ]]; then
+      (( n < long )) || continue
+      v=$(( (short * n / long + 1) / 2 * 2 ))   # the other side, even (as scrcpy makes it)
+      [[ $1 == phone ]] && S_LABEL+=("${v}x$n") || S_LABEL+=("${n}x$v")
+    else
+      S_LABEL+=("Up to $n")
+    fi
+    S_VALUE+=($n)
+  done
+  (( ${S_VALUE[(Ie)$S_DEFAULT]} )) || S_DEFAULT=native   # a screen smaller than the default
+}
+
+BITRATES=(2M 4M 6M 8M 12M 16M 24M 32M)   # offered bit rates (scrcpy --video-bit-rate)
+FRAME_RATES=(30 60 90 120 unlimited)      # offered frame rates (scrcpy --max-fps; unlimited: none)
+
 # Without a DeX display: can the phone run its desktop headless, on a display scrcpy
 # creates (--new-display)? Samsung renders DeX there from One UI 8, other phones their
 # desktop mode from Android 16. Only reads the phone's version; changes no settings.
@@ -1071,10 +1151,11 @@ checkVirtualDesktop() {
   return 0
 }
 
-# The session's settings, in one window, remembered for this phone (the saved ones are
-# the defaults next time):
+# The session's settings, remembered for this phone (the saved ones are the defaults
+# next time). First, only when there's a choice, a window asking what to show:
 #   Show           the phone screen, DeX (if a DeX display is connected) or the
-#                  headless desktop (if the phone can run it); only with a choice
+#                  headless desktop (if the phone can run it)
+# then the settings window for that screen (Back returns to the first window):
 #   Sound          on the phone, or on this computer
 #   Video encoder  every encoder the phone has; the best one is marked ★ (and bold) and
 #                  is the default until another one was chosen
@@ -1082,13 +1163,18 @@ checkVirtualDesktop() {
 #                  looked smoother on a Mac (VideoToolbox) and costs little CPU
 #   Renderer       how the window draws: automatic (SDL's choice) or one of this
 #                  computer's render drivers (RENDER_DRIVERS from the platform)
+#   Resolution     per screen, see sizeChoices: portrait sizes for the phone screen,
+#                  landscape for DeX and headless
+#   Bit rate       per screen
+#   Frame rate     30 to 120 fps, or unlimited
 # Without saved settings: DeX if it's connected, else the phone screen; sound on this
-# computer; software decoding; automatic renderer.
+# computer; software decoding; automatic renderer; phone screen 1600 high at 6 Mbit/s,
+# DeX native and headless 1920x1080 at 8 Mbit/s; 60 fps.
 # -> TARGET, AUDIO, AUDIO_CHOICE, VIDEO, VIDEO_CHOICE, DECODE, DECODE_CHOICE, RENDER,
-#    RENDER_CHOICE
+#    RENDER_CHOICE, SIZE, SIZE_CHOICE, BITRATE, FPS, FPS_CHOICE
 askSettings() {
-  local idx i j choice show sound encoder decoding renderer driver
-  local -a screens encoders renderers groups answers
+  local idx i j v name choice show sound encoder decoding renderer driver size bitrate fps saved
+  local -a screens encoders renderers bitrates rates groups answers
   local sound_off="On the phone" sound_on="On this computer (phone muted)"
   local decode_sw="Software" decode_hw="Hardware (GPU)" automatic="Automatic"
   idx=$(phoneIndex "$CHOSEN_ID")
@@ -1119,38 +1205,67 @@ askSettings() {
   done
 
   while true; do
-    groups=()
-    (( ${#screens} > 1 )) && groups+=("Show:" "$show" "" "${(pj:\n:)screens}")
-    groups+=("Sound:" "$sound" "" "$sound_off"$'\n'"$sound_on")
-    (( ${#encoders} )) && groups+=("Video encoder:" "$encoder" "${encoders[1]}" "${(pj:\n:)encoders}")
-    groups+=("Decoding:" "$decoding" "$decode_sw" "$decode_sw"$'\n'"$decode_hw")
-    groups+=("Renderer:" "$renderer" "" "${(pj:\n:)renderers}")
-    showStatus "Choose the settings…"
-    answers=(${(f)"$(settingsForm "Settings for ${PHONE_NAME} — remembered for this phone." "Start" "Cancel" "${groups[@]}")"})
-    (( ${#answers} )) || return 2   # Cancel
-    (( ${#screens} > 1 )) && { show=${answers[1]}; shift answers; }
-    sound=${answers[1]}
-    shift answers
-    (( ${#encoders} )) && { encoder=${answers[1]}; shift answers; }
-    decoding=${answers[1]} renderer=${answers[2]}
-    [[ "$show" == "$VIRTUAL_DESKTOP" && -n "$show" ]] || break
-    # "Go back" is the default button
-    choice=$(askQuestion "${VIRTUAL_DESKTOP% \(experimental\)} is experimental.
+    # 1. what to show, only when there's a choice (it decides which sizes are offered)
+    if (( ${#screens} > 1 )); then
+      showStatus "Choose what to show…"
+      show=$(settingsForm "What to show from ${PHONE_NAME}?" "Next" "Cancel" "Show:" "$show" "" "${(pj:\n:)screens}")
+      [[ -n "$show" ]] || return 2   # Cancel
+      if [[ "$show" == "$VIRTUAL_DESKTOP" ]]; then
+        # "Go back" is the default button
+        choice=$(askQuestion "${VIRTUAL_DESKTOP% \(experimental\)} is experimental.
 
 • After the session the phone's back gesture stops working until its interface restarts. PhoneConnect restarts it when you close the window (the status bar flickers once).
 
 • To give apps their own windows, PhoneConnect turns on \"freeform windows\" (Developer options) for the session and turns it off afterwards.
 
 • If the phone loses its connection before that, connect it again and open PhoneConnect to finish. Restarting the phone also fixes the back gesture." "Continue" "Go back")
-    [[ -z "$choice" ]] && return 2   # Cancel
-    [[ "$choice" == "Continue" ]] && break
+        [[ -z "$choice" ]] && return 2   # Cancel
+        [[ "$choice" == "Continue" ]] || continue
+      fi
+    fi
+    case $show in
+      DeX)                TARGET="dex" ;;
+      "$VIRTUAL_DESKTOP") TARGET="virtual" ;;
+      *)                  TARGET="phone" ;;
+    esac
+
+    # 2. the settings for that screen; Back (instead of Cancel) when step 1 was shown
+    sizeChoices $TARGET
+    # saved per screen: P_PHONE_SIZE, P_DEX_SIZE, P_VIRTUAL_SIZE (and the same for the bit rate)
+    saved="" name="P_${(U)TARGET}_SIZE"; [[ -n "$idx" ]] && saved=${${(P)name}[idx]}
+    (( ${S_VALUE[(Ie)$saved]} )) || saved=$S_DEFAULT
+    size=${S_LABEL[${S_VALUE[(ie)$saved]}]}
+    [[ $TARGET == phone ]] && bitrate=6M || bitrate=8M
+    saved="" name="P_${(U)TARGET}_BITRATE"; [[ -n "$idx" ]] && saved=${${(P)name}[idx]}
+    (( ${BITRATES[(Ie)$saved]} )) && bitrate=$saved
+    bitrates=(); for v in "${BITRATES[@]}"; do bitrates+=("${v%M} Mbit/s"); done
+    bitrate="${bitrate%M} Mbit/s"
+    rates=(); for v in "${FRAME_RATES[@]}"; do [[ $v == unlimited ]] && rates+=("Unlimited") || rates+=("$v fps"); done
+    saved=${idx:+${P_FPS[idx]}}
+    (( ${FRAME_RATES[(Ie)$saved]} )) || saved=60
+    fps=${rates[${FRAME_RATES[(ie)$saved]}]}
+
+    groups=()
+    groups+=("Sound:" "$sound" "" "$sound_off"$'\n'"$sound_on")
+    (( ${#encoders} )) && groups+=("Video encoder:" "$encoder" "${encoders[1]}" "${(pj:\n:)encoders}")
+    groups+=("Decoding:" "$decoding" "$decode_sw" "$decode_sw"$'\n'"$decode_hw")
+    groups+=("Renderer:" "$renderer" "" "${(pj:\n:)renderers}")
+    groups+=("Resolution:" "$size" "" "${(pj:\n:)S_LABEL}")
+    groups+=("Bit rate:" "$bitrate" "" "${(pj:\n:)bitrates}")
+    groups+=("Frame rate:" "$fps" "" "${(pj:\n:)rates}")
+    showStatus "Choose the settings…"
+    answers=(${(f)"$(settingsForm "Settings for ${PHONE_NAME}${${(M)TARGET:#dex}:+ (DeX)}${${(M)TARGET:#virtual}:+ (${VIRTUAL_DESKTOP% \(experimental\)})} — remembered for this phone." "Start" "${${screens[2]:+Back}:-Cancel}" "${groups[@]}")"})
+    if (( ! ${#answers} )); then
+      (( ${#screens} > 1 )) && continue   # Back
+      return 2                             # Cancel
+    fi
+    sound=${answers[1]}
+    shift answers
+    (( ${#encoders} )) && { encoder=${answers[1]}; shift answers; }
+    decoding=${answers[1]} renderer=${answers[2]} size=${answers[3]} bitrate=${answers[4]} fps=${answers[5]}
+    break
   done
 
-  case $show in
-    DeX)               TARGET="dex" ;;
-    "$VIRTUAL_DESKTOP") TARGET="virtual" ;;
-    *)                 TARGET="phone" ;;
-  esac
   AUDIO_CHOICE=$sound
   [[ "$sound" == "$sound_on" ]] && AUDIO=() || AUDIO=(--no-audio)
   i=${encoders[(ie)$encoder]}
@@ -1165,6 +1280,18 @@ askSettings() {
   j=${renderers[(ie)$renderer]}   # 1 is Automatic, the drivers follow
   (( j > 1 )) && driver=${RENDER_DRIVERS[j - 1]} || driver=""
   [[ -n "$driver" ]] && RENDER=(--render-driver=$driver) || RENDER=()
+  SIZE_CHOICE=$size
+  size=${S_VALUE[${S_LABEL[(ie)$size]}]}
+  case $size in
+    native) SIZE=() ;;
+    *x*)    SIZE=(--new-display=$size/$(( 160 * ${size#*x} / 1080 ))) ;;   # 160 dpi at 1080 high
+    *)      SIZE=(--max-size=$size) ;;
+  esac
+  bitrate=${BITRATES[${bitrates[(ie)$bitrate]}]}
+  BITRATE=$bitrate
+  FPS_CHOICE=$fps
+  fps=${FRAME_RATES[${rates[(ie)$fps]}]}
+  [[ $fps == unlimited ]] && FPS=() || FPS=(--max-fps=$fps)
   # Remember them; what to show only if there was a choice (an undocked phone keeps DeX)
   if [[ -n "$idx" ]]; then
     (( ${#screens} > 1 )) && P_SCREEN[idx]=$TARGET
@@ -1172,6 +1299,12 @@ askSettings() {
     (( ${#E_NAME} )) && P_ENCODER[idx]=${E_NAME[i]}
     [[ "$decoding" == "$decode_hw" ]] && P_DECODER[idx]=hw || P_DECODER[idx]=sw
     P_RENDERER[idx]=$driver
+    case $TARGET in
+      phone)   P_PHONE_SIZE[idx]=$size   P_PHONE_BITRATE[idx]=$bitrate ;;
+      dex)     P_DEX_SIZE[idx]=$size     P_DEX_BITRATE[idx]=$bitrate ;;
+      virtual) P_VIRTUAL_SIZE[idx]=$size P_VIRTUAL_BITRATE[idx]=$bitrate ;;
+    esac
+    P_FPS[idx]=$fps
     writeSavedDevices
   fi
   return 0
@@ -1240,22 +1373,23 @@ runScrcpyWithRetries() {
   # VIDEO: the codec and encoder chosen in the settings
   # bitrate-mode=1: variable bit rate. The bit rate is an average, so frames with a lot
   # of motion (scrolling) may use more instead of being held back.
-  local -a common=(-s "$SERIAL" -K "${VIDEO[@]}" --max-fps=60 --video-codec-options=bitrate-mode:int=1 -V debug "${AUDIO[@]}" "${DECODE[@]}" "${RENDER[@]}")
+  local -a common=(-s "$SERIAL" -K "${VIDEO[@]}" "${FPS[@]}" --video-codec-options=bitrate-mode:int=1 -V debug "${AUDIO[@]}" "${DECODE[@]}" "${RENDER[@]}")
   echo "Video encoder: $VIDEO_CHOICE"
   echo "Decoding: $DECODE_CHOICE; renderer: $RENDER_CHOICE"
+  echo "Resolution: $SIZE_CHOICE; bit rate: $BITRATE; frame rate: $FPS_CHOICE"
   if [[ "$TARGET" == "dex" ]]; then
     echo "Mirroring DeX (display $DEX_ID), audio: $AUDIO_CHOICE"
-    args=("${common[@]}" --display-id="$DEX_ID" --video-bit-rate=8M
+    args=("${common[@]}" --display-id="$DEX_ID" "${SIZE[@]}" --video-bit-rate=$BITRATE
           --window-title="PhoneConnect — $PHONE_NAME, DeX ($LINK)" "$@")
   elif [[ "$TARGET" == "virtual" ]]; then
     # a new display only for this session (gone when scrcpy ends); the phone runs its
     # desktop on it
     echo "Mirroring ${VIRTUAL_DESKTOP}, audio: $AUDIO_CHOICE"
-    args=("${common[@]}" --new-display=1920x1080/160 --video-bit-rate=8M
+    args=("${common[@]}" "${SIZE[@]}" --video-bit-rate=$BITRATE
           --window-title="PhoneConnect — $PHONE_NAME, ${VIRTUAL_DESKTOP% \(experimental\)} ($LINK)" "$@")
   else
     echo "Mirroring phone screen, audio: $AUDIO_CHOICE"
-    args=("${common[@]}" --max-size=1600 --video-bit-rate=6M
+    args=("${common[@]}" "${SIZE[@]}" --video-bit-rate=$BITRATE
           --window-title="PhoneConnect — $PHONE_NAME ($LINK)" "$@")
   fi
 
