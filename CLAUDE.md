@@ -184,6 +184,9 @@ and the defaults next time:
   no hardware H.265 encoder; asking for h265 got Google's software `c2.android.hevc.encoder`,
   whose limits made scrcpy shrink the picture to 222x512, and it lagged. Hardware H.264
   there: 698x1600 at ~55 fps. No list → `--video-codec=h265` as before.
+  The list call came back empty once over Wi-Fi (the connection dropped meanwhile:
+  "device offline" right after), so the window had no Show and encoder menus: output
+  without any `--display-id=` (every phone has display 0) → `reconnect`, ask once more.
 - Decoding: software (`--hwdec=disabled`, default, bold) / hardware (`--hwdec=auto`:
   VideoToolbox on Mac, D3D11 on Windows). Why: on an M1 Pro, VideoToolbox looked less
   smooth than software decoding (S22, H.264 746x1600, same settings), which used under 2%

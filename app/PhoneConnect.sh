@@ -545,6 +545,16 @@ connectTo() {     # connectTo <ip> -> sets SERIAL on success
   return 1
 }
 
+# reconnect: bring SERIAL back after the connection dropped (network: connect again;
+# USB: wait for the phone up to 10 s)
+reconnect() {
+  if [[ "$SERIAL" == *:* ]]; then
+    connectTo "${SERIAL%:*}"
+  else
+    withTimeout 10 adb -s "$SERIAL" wait-for-device >/dev/null
+  fi
+}
+
 # learnPhone <serial> <id if unreadable> [<ip used> <eth|wifi>]
 # Reads which phone is at SERIAL and its current IPs, and saves them.
 # Sets LEARNED_ID, LEARNED_NAME, LEARNED_ETH.
@@ -977,9 +987,17 @@ connectToChosenDevice() {
 # call, the phone's video encoders (scrcpy can show the picture with), best first ->
 # E_CODEC E_NAME E_HW; aliases (other names for the same encoder) are left out.
 findDisplaysAndEncoders() {
-  local out line
+  local out line try
   showStatus "Looking for a DeX screen…"
-  out=$(LOGGED_LABEL="scrcpy -s $SERIAL --list-displays --list-encoders" runLogged "$SCRCPY" -s "$SERIAL" --list-displays --list-encoders 2>&1)
+  for try in 1 2; do
+    out=$(LOGGED_LABEL="scrcpy -s $SERIAL --list-displays --list-encoders" runLogged "$SCRCPY" -s "$SERIAL" --list-displays --list-encoders 2>&1)
+    # every phone has display 0: no displays at all means the connection dropped
+    # meanwhile (seen over Wi-Fi: "device offline" right after); reconnect, ask again
+    [[ "$out" == *--display-id=* ]] && break
+    (( try == 2 )) && { echo "No display list again: going on without DeX and encoders"; break; }
+    echo "No display list (connection dropped?): reconnecting and asking again"
+    reconnect
+  done
   DEX_ID=$(print -r -- "$out" | grep -o 'display-id=[0-9]*' | cut -d= -f2 | grep -v '^0$' | head -1)
   E_CODEC=() E_NAME=() E_HW=()
   for line in ${(f)out}; do

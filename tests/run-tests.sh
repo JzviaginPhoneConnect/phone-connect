@@ -375,6 +375,23 @@ run_app $C
 check "renderer default is Automatic" eval 'grep "group: Renderer:" $FAKE/events | grep -qF "default: Automatic" && ! file_has scrcpy_args "--render-driver"'
 check "decoding still saved" file_has scrcpy_args "--hwdec=auto"
 
+print "== the connection drops while listing displays and encoders: reconnect, ask again"
+sed -i.bak 's/ decoder="[^"]*"//; s/ renderer="[^"]*"//' $C/phones.xml
+print 1 > $C/list_drops; rm -f $C/scrcpy_lists
+run_app $C
+check "USB: waited for the phone, asked again" eval 'logged_line "No display list (connection dropped?)" && file_has adb.log "adb -s usbX wait-for-device" && [[ $(wc -l < $C/scrcpy_lists) -eq 2 ]]'
+check "  ...encoders offered" encoder_group "H.265 · hardware · c2.fake.hevc.encoder  ★ best"
+: > $C/usb; print '10.0.0.50|XXX9999|Redmi A3||10.0.0.50' > $C/net
+print 1 > $C/list_drops; rm -f $C/scrcpy_lists $C/adb.log
+run_app $C
+check "Wi-Fi: connected again, asked again" eval 'logged_line "Connection: Redmi A3 — Wi-Fi (10.0.0.50:5555)" && [[ $(grep -c "adb connect 10.0.0.50:5555" $C/adb.log) -ge 2 ]] && [[ $(wc -l < $C/scrcpy_lists) -eq 2 ]]'
+check "  ...encoders offered" encoder_group "H.265 · hardware · c2.fake.hevc.encoder  ★ best"
+print 2 > $C/list_drops
+run_app $C
+check "still nothing: goes on without encoders" eval 'logged_line "No display list again" && ! file_has events "group: Video encoder:" && file_has scrcpy_args "--video-codec=h265"'
+rm -f $C/list_drops $C/net
+print 'usbX|XXX9999|Redmi A3||10.0.0.50|5555' > $C/usb
+
 print "== Cancel in the settings window"
 : > $C/cancel_settings
 run_app $C

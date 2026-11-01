@@ -2,6 +2,7 @@
 # Fake scrcpy: no DeX display (unless FAKE_DEX_DISPLAY=<id>); "shows the picture" at
 # once, then quits. Video encoders: hardware H.264 and H.265, software H.264;
 # FAKE_ENCODERS=redmi: hardware H.264 only (H.265 in software), =none: no list.
+# $FAKE/list_drops = N: the next N list calls get nothing (the connection dropped).
 encoders() {
   print "[server] INFO: List of video encoders:"
   case $FAKE_ENCODERS in
@@ -20,6 +21,11 @@ encoders() {
 }
 case " $* " in
   *" --list-displays "*)
+    print -r -- "$*" >> $FAKE/scrcpy_lists
+    if (( $(cat $FAKE/list_drops 2>/dev/null || print 0) > 0 )); then
+      print $(( $(<$FAKE/list_drops) - 1 )) > $FAKE/list_drops
+      print "INFO: ADB device found:"; exit 0
+    fi
     [[ " $* " == *" --list-encoders "* ]] && encoders
     print "[server] INFO: List of displays:"
     print "    --display-id=0"; [[ -n $FAKE_DEX_DISPLAY ]] && print "    --display-id=$FAKE_DEX_DISPLAY"; exit 0 ;;
