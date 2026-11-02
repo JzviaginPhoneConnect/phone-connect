@@ -49,6 +49,7 @@ The newest version is on the [Releases page](../../releases/latest). Older versi
 
 1. On the phone, go to **Settings → About phone → Software information** and tap **Build number** 7 times to unlock Developer options.
 2. In **Settings → Developer options**, turn on **USB debugging**.
+   - **Xiaomi, Redmi, POCO:** the menu is **Settings → Additional settings → Developer options**. Also turn on **USB debugging (Security settings)**, or you can only watch the screen without using the mouse and keyboard. Xiaomi only allows it with a SIM card in the phone and a Xiaomi account signed in. PhoneConnect reminds you if it's off.
 3. Plug the phone into the computer with a USB cable and open PhoneConnect. On the phone, tap **Allow** on *"Allow USB debugging?"* and tick **Always allow from this computer**.
 
 ## How it works
@@ -85,6 +86,8 @@ When you open PhoneConnect:
 | Problem | What to do |
 |---|---|
 | "No phone found" | Plug in the USB cable once (always needed after the phone restarts). Check that USB debugging is on and that you tapped **Allow** on the phone. |
+| Picture shows, but mouse and keyboard do nothing (Xiaomi, Redmi, POCO) | Turn on **Developer options → USB debugging (Security settings)** (see Phone setup), then open PhoneConnect again. |
+| Some app screens are black | Apps that block screenshots (banking, passwords, Netflix and other video apps) show black. Android doesn't let any mirroring app capture them; use those apps on the phone. |
 | Choppy picture | Use a cable or Ethernet rather than Wi-Fi. On the phone, set **Display → Motion smoothness** to **Standard**. |
 | It keeps retrying | Make sure the computer and phone are on the same network and no VPN is running. |
 | Anything else | Look at the log of the last run: Mac `/tmp/PhoneConnect.log`, Windows `%TEMP%\PhoneConnect.log` |
