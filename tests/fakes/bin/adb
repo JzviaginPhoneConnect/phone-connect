@@ -46,6 +46,8 @@ case $1 in
       "getprop ro.product.manufacturer") print -r -- "${FAKE_MAKER-samsung}" ;;
       "getprop ro.build.version.oneui") print -r -- "${FAKE_ONEUI-}" ;;
       "getprop ro.build.version.sdk") print -r -- "${FAKE_SDK-34}" ;;
+      # Xiaomi's "USB debugging (Security settings)"
+      "getprop persist.security.adbinput") print -r -- "${FAKE_ADBINPUT-1}" ;;
       "settings get global device_name") print -r -- "$name" ;;
       "settings get secure android_id") print "null" ;;
       "getprop service.adb.tcp.port") print -r -- "$port" ;;

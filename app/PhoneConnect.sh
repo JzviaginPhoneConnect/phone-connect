@@ -1017,6 +1017,30 @@ connectToChosenDevice() {
   return 0
 }
 
+# Xiaomi (also Redmi, POCO) refuses input from the computer unless a second switch is
+# on, Developer options → USB debugging (Security settings): without it scrcpy shows the
+# picture, but clicks and keys do nothing (INJECT_EVENTS SecurityException in the log).
+# The switch is the property persist.security.adbinput (1 = on). Only reads it.
+checkInputAllowed() {
+  local maker answer
+  maker=$(phoneProp "$SERIAL" getprop ro.product.manufacturer)
+  [[ "${(L)maker}" == xiaomi ]] || return 0
+  while [[ "$(phoneProp "$SERIAL" getprop persist.security.adbinput)" != 1 ]]; do
+    echo "Xiaomi: USB debugging (Security settings) is off — no control from the computer"
+    showStatus "Control from this computer is off on the phone"
+    # "Try again" is the default button
+    answer=$(askQuestion "To use $PHONE_NAME with this computer's mouse and keyboard, turn on one more switch on the phone:
+
+Settings → Additional settings → Developer options → USB debugging (Security settings).
+
+Xiaomi only allows it with a SIM card in the phone and a Xiaomi account signed in. Without it you can only watch the screen." "Watch only" "Try again")
+    [[ -z "$answer" ]] && return 2   # Cancel
+    [[ "$answer" == "Watch only" ]] && return 0
+  done
+  echo "Xiaomi: USB debugging (Security settings) is on"
+  return 0
+}
+
 # Look for a DeX (external) display: any display other than 0 -> DEX_ID. In the same
 # call, the phone's video encoders (scrcpy can show the picture with), best first ->
 # E_CODEC E_NAME E_HW; aliases (other names for the same encoder) are left out.
@@ -1450,6 +1474,7 @@ main() {
   step checkAnyDeviceKnown       || exit 1
   step displayDeviceChoiceDialog || exit 0      # 2 = cancelled
   step connectToChosenDevice     || exit 1
+  step checkInputAllowed         || exit 0      # cancelled
   step findDisplaysAndEncoders
   step checkVirtualDesktop
   step askSettings               || exit 0      # cancelled

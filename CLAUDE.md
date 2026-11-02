@@ -110,6 +110,12 @@ end user installs nothing and never opens a terminal.
   reach it over USB through the dock, only over the network (the dock's Ethernet or
   Wi-Fi). A dock without a monitor needs an HDMI dummy plug for DeX to start.
 - Keyboard input uses the phone's own layouts, so non-English languages work.
+- **Xiaomi/Redmi/POCO:** input needs Developer options → "USB debugging (Security settings)"
+  (property `persist.security.adbinput` = 1; needs a SIM and a Xiaomi account); without it
+  only the picture works (INJECT_EVENTS SecurityException). `checkInputAllowed` asks the user
+  to turn it on (Try again / Watch only); it only reads the property.
+- Screens of apps that block screenshots (FLAG_SECURE) are black: since Android 12 adb/scrcpy
+  can't capture them, on any phone. Not fixable.
 - Call audio can't go through scrcpy (Android blocks capturing it), so calls can be
   dialled and answered from the window but are heard on the phone or its earbuds.
 

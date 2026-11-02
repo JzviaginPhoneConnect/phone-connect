@@ -1,8 +1,9 @@
 #!/bin/zsh -f
 # Fake: answers with the first line of $FAKE/answers if it's one of the buttons (and
-# takes that line off), else picks the first button
+# takes that line off), else picks the first button; $FAKE/cancel_ask: Cancel
 print -r -- "ask: $1" >> $FAKE/events
 print -r -- "buttons: ${(j:|:)@[2,-1]}" >> $FAKE/events
+[[ -e $FAKE/cancel_ask ]] && exit 0
 if [[ -s $FAKE/answers ]]; then
   local next=${"$(<$FAKE/answers)"%%$'\n'*}
   if (( ${@[2,-1][(Ie)$next]} )); then

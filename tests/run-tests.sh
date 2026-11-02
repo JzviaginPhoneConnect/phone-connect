@@ -463,6 +463,30 @@ check "stopped, scrcpy not started" eval 'no_file $C/scrcpy_args && ! logged_lin
 rm -f $C/cancel_settings
 unset FAKE_MAKER
 
+# ==== Xiaomi: USB debugging (Security settings) off = no control ====
+print "== Xiaomi, Security settings switch off: asked, Try again, then Watch only"
+export FAKE_MAKER=Xiaomi FAKE_ADBINPUT=0
+print 'Try again\nWatch only' > $C/answers; : > $C/adb.log
+run_app $C
+check "told how to turn it on" file_has events "ask: To use Redmi A3 with this computer's mouse and keyboard"
+check "  ...Try again is the default" asked_buttons "Watch only|Try again"
+check "asked again after Try again" eval '[[ $(grep -c "^ask: To use Redmi A3" $FAKE/events) == 2 ]]'
+check "Watch only: mirrors anyway" file_has scrcpy_args "-K"
+check "nothing changed on the phone" eval '! grep -E "settings (put|delete)|setprop" $FAKE/adb.log | grep -q .'
+print "== ...Cancel"
+: > $C/cancel_ask
+run_app $C
+check "stopped, scrcpy not started" eval 'no_file $C/scrcpy_args && ! logged_line "Starting (attempt"'
+rm -f $C/cancel_ask
+print "== Xiaomi with the switch on, and other phones: not asked"
+export FAKE_ADBINPUT=1
+run_app $C
+check "Xiaomi, switch on: no question" eval '! file_has events "ask: To use" && file_has scrcpy_args "-K"'
+export FAKE_MAKER=samsung FAKE_ADBINPUT=0
+run_app $C
+check "Samsung: no question" eval '! file_has events "ask: To use" && file_has scrcpy_args "-K"'
+unset FAKE_MAKER FAKE_ADBINPUT
+
 # ==== reopened while an earlier run hangs ====
 C=$WORK/reopen; mkdir -p $C
 print "== opened again while the previous run hangs: it's stopped, this run goes on"
