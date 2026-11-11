@@ -41,4 +41,9 @@ print "INFO: Texture: 1080x2340"
 zmodload zsh/zselect; zselect -t 30     # stay up for 0.3 s
 # $FAKE/on_scrcpy: something that happens during the session (e.g. the phone goes away)
 [[ -f $FAKE/on_scrcpy ]] && zsh -f $FAKE/on_scrcpy
+# $FAKE/scrcpy_exits: exit codes for the next sessions, one per line (2 = disconnected)
+if [[ -s $FAKE/scrcpy_exits ]]; then
+  rc=$(head -1 $FAKE/scrcpy_exits); tail -n +2 $FAKE/scrcpy_exits > $FAKE/x.tmp; mv $FAKE/x.tmp $FAKE/scrcpy_exits
+  exit $rc
+fi
 exit 0

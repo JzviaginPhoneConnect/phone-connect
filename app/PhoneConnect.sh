@@ -1017,6 +1017,74 @@ connectToChosenDevice() {
   return 0
 }
 
+# ---- The connection dropped during the session: get the phone back ----
+
+# findUsbConnection: the chosen phone, if it's plugged in by USB now -> SERIAL, LINK
+findUsbConnection() {
+  local usb
+  for usb in ${(f)"$(usbSerials)"}; do
+    waitUsbReady "$usb" || continue
+    if [[ "$(phoneId "$usb")" == "$CHOSEN_ID" ]]; then
+      USB_OF[$CHOSEN_ID]=$usb
+      SERIAL=$usb; LINK="USB"
+      return 0
+    fi
+  done
+  echo "  not on USB"
+  return 1
+}
+
+# reconnectOver <USB|Ethernet|Wi-Fi|Wireless debugging>: up to 3 tries, 2 s apart.
+# Each try checks first that the phone is there (on USB / answers at its IP, see
+# connectTo), so a phone that's gone costs only a moment.
+reconnectOver() {
+  local try
+  for try in 1 2 3; do
+    (( try > 1 )) && sleep 2
+    echo "Reconnecting over $1 (try $try of 3)"
+    showStatus "Reconnecting over $1 (try $try of 3)…"
+    case $1 in
+      USB)      findUsbConnection ;;
+      Ethernet) tryEthernetConnection ;;
+      Wi-Fi)    tryWifiConnection ;;
+      *)        tryWirelessDebuggingConnection ;;
+    esac && return 0
+  done
+  return 1
+}
+
+# scrcpy ended because the phone went away (exit 2). Try the same link again, then
+# the others (USB, Ethernet, Wi-Fi: those that can work), 3 tries each. Sets SERIAL
+# and LINK for the next session.
+reconnectAfterDrop() {
+  local idx link old=$LINK
+  local -a links=("$LINK" USB)
+  echo "Connection to $PHONE_NAME dropped ($LINK, $SERIAL)"
+  : > "$STATUS_FILE"                       # the window closed when the picture came up
+  platform status_window "$STATUS_FILE" >/dev/null
+  showStatus "Lost the connection to $PHONE_NAME — reconnecting…"
+  [[ "$SERIAL" == *:* ]] && adb disconnect "$SERIAL" >/dev/null 2>&1
+  SERIAL=""
+  if idx=$(phoneIndex "$CHOSEN_ID"); then
+    [[ -n "${P_ETH[idx]}"  ]] && links+=(Ethernet)
+    [[ -n "${P_WIFI[idx]}" ]] && links+=(Wi-Fi)
+  fi
+  for link in ${(u)links}; do
+    if step reconnectOver "$link"; then
+      [[ "$LINK" == Wi-Fi ]] && step switchToEthernetIfDocked
+      echo "Reconnected: $PHONE_NAME — $LINK ($SERIAL)"
+      showStatus "Reconnected over $LINK"
+      return 0
+    fi
+  done
+  SERIAL=""; LINK=$old
+  showStatus "Couldn't reconnect to $PHONE_NAME"
+  showAlert "connection lost" "Lost the connection to $PHONE_NAME and couldn't get it back.
+
+Connect the phone with a USB cable, or to the same network as this computer, and open PhoneConnect again."
+  return 1
+}
+
 # Xiaomi (also Redmi, POCO) refuses input from the computer unless a second switch is
 # on, Developer options → USB debugging (Security settings): without it scrcpy shows the
 # picture, but clicks and keys do nothing (INJECT_EVENTS SecurityException in the log).
@@ -1481,6 +1549,11 @@ main() {
   step prepareHeadless
   step runScrcpyWithRetries "$@"
   rc=$?
+  while (( rc == 2 )); do                       # 2: the phone went away
+    step reconnectAfterDrop      || { rc=1; break; }
+    step runScrcpyWithRetries "$@"
+    rc=$?
+  done
   step finishTasks                              # undo what the session did to the phone
   exit $rc
 }

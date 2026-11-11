@@ -165,6 +165,11 @@ Connection, in order of preference: **USB → Ethernet → Wi-Fi**.
   `adb connect` to an unreachable IP can hang for over a minute.
 - Disconnect stale `offline` network entries first; they cause "Server connection failed".
 - Fallback: an mDNS Wireless-debugging device (`_adb-tls-connect._tcp`) whose id matches.
+- Connection dropped during the session (scrcpy exit 2 = disconnected; closing the window
+  is 0): `reconnectAfterDrop` reopens the status window, tries the same link 3 times
+  (2 s apart, each first checking the phone is there: on USB / port open), then the
+  others (USB → Ethernet → Wi-Fi, only those with a saved IP), 3 times each, and starts
+  scrcpy again with the same settings. None works → alert, the run ends.
 
 scrcpy options in use: `-K` (UHID keyboard: real-keyboard mode so the phone's own
 layouts work, which non-English languages need; the language switch is the phone's

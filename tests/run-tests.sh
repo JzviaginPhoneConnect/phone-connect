@@ -537,6 +537,47 @@ unset FAKE_NO_ROUTE
 run_app $C
 check "without the block: connected, no alert" eval 'logged_line "Connection: Pixel 7 — Wi-Fi (10.0.0.40:5555)" && no_file $C/alert'
 
+# ==== connection dropped during the session (scrcpy exit 2) ====
+C=$WORK/drop; mkdir -p $C
+scrcpy_runs() { grep -c "Step start: runScrcpyWithRetries" <<< "$(run_log)"; }
+print "== Wi-Fi drops, the phone is still there: reconnected over Wi-Fi"
+print '10.0.0.50|DDD1234|Pixel 6||10.0.0.50' > $C/net
+xml '  <phone id="DDD1234" name="Pixel 6" eth="" wifi="10.0.0.50"/>' > $C/phones.xml
+print 2 > $C/scrcpy_exits
+run_app $C
+check "noticed the drop" logged_line "Connection to Pixel 6 dropped (Wi-Fi, 10.0.0.50:5555)"
+check "reconnected over Wi-Fi on the first try" eval 'logged_line "Reconnected: Pixel 6 — Wi-Fi (10.0.0.50:5555)" && ! logged_line "Reconnecting over Wi-Fi (try 2 of 3)"'
+check "status window opened again" eval 'run_log | grep -c "platform/status_window" | grep -qx 2'
+check "scrcpy started again" eval '[[ $(scrcpy_runs) == 2 ]]'
+check "no alert" no_file $C/alert
+
+print "== USB cable pulled: 3 tries on USB, then Wi-Fi"
+print 'usbD|DDD1234|Pixel 6||10.0.0.50|5555' > $C/usb
+print ": > $C/usb" > $C/on_scrcpy
+print 2 > $C/scrcpy_exits
+run_app $C
+check "3 tries on USB" eval 'logged_line "Reconnecting over USB (try 3 of 3)" && ! logged_line "Reconnecting over USB (try 4"'
+check "then reconnected over Wi-Fi" logged_line "Reconnected: Pixel 6 — Wi-Fi (10.0.0.50:5555)"
+check "  ...and the session ran over it" file_has scrcpy_args "-s 10.0.0.50:5555"
+rm -f $C/on_scrcpy
+
+print "== Wi-Fi drops and the phone is gone: every link tried, then an alert"
+print ": > $C/net" > $C/on_scrcpy
+print 2 > $C/scrcpy_exits
+: > $C/adb.log
+run_app $C
+check "3 tries on Wi-Fi, then USB" eval 'logged_line "Reconnecting over Wi-Fi (try 3 of 3)" && logged_line "Reconnecting over USB (try 3 of 3)"'
+check "Wi-Fi checked before connecting (no adb connect)" eval '[[ $(grep -c "adb connect 10.0.0.50" $FAKE/adb.log) == 1 ]]'
+check "told the user" file_has alert "Lost the connection to Pixel 6"
+check "scrcpy not started again" eval '[[ $(scrcpy_runs) == 1 ]]'
+rm -f $C/on_scrcpy
+
+print "== window closed normally (exit 0): no reconnect"
+print '10.0.0.50|DDD1234|Pixel 6||10.0.0.50' > $C/net
+rm -f $C/alert
+run_app $C
+check "no reconnect" eval '! logged_line "dropped"'
+
 print
 print "$PASS passed, $FAIL failed (log: $LOG)"
 (( FAIL == 0 ))
